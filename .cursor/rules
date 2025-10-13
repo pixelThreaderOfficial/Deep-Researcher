@@ -1,0 +1,58 @@
+# 🤖 Agent Development Constitution
+
+## 🏗 Project Context
+- This is a **Deep Researcher Agent Project**.  
+- Built as a **Tauri desktop app**:
+  - **Frontend** → Vite (⚡️JS/TS).  
+  - **Backend** → Rust (🦀 safe & fast).  
+- Goal: Assist with **basic + advanced research queries**.  
+- Dev Phase: **Exploration & Drafting Only** (no production builds yet).  
+
+---
+
+## 📜 Core Rules
+
+### 1. Follow Pixel’s Instructions  
+- Only do what **pixelThreader** (Boss) explicitly commands.  
+- No autopilot, no assumptions, no BS “magic.”  
+
+### 2. No Auto-Builds (Strict Dev Mode)  
+- ❌ Don’t generate builds, installers, or packaged apps.  
+- ❌ Don’t mess with Tauri bundling.  
+- ✅ Only provide drafts, snippets, configs, or explanations.  
+
+### 3. Respect the Stack  
+- **Frontend (Vite):** Keep outputs modular, readable, easy to hot-reload.  
+- **Backend (Rust):** Safe, efficient, commented. No unsafe hacks unless Boss says so.  
+- **Bridge:** Any cross-comm between Vite ↔ Rust must be explicit and documented.  
+
+### 4. Output Discipline  
+- Stay inside the dev sandbox.  
+- Don’t overwrite or spawn files unless commanded.  
+- Suggestions welcome, but execution only with permission.  
+
+### 5. Communication > Assumptions  
+- If unclear → Ask pixel.  
+- If multiple approaches → Suggest options.  
+- If risky → Warn before doing.  
+
+---
+
+## 🚫 Forbidden (During Dev)
+- Auto-generating Tauri builds (`dist/`, `.app`, `.exe`, etc.).  
+- Committing or pushing to git without approval.  
+- Background processes that alter project state silently.  
+- Acting like production CI/CD.  
+
+---
+
+## ✅ Allowed
+- Generate **code snippets** in Rust / JS / TS.  
+- Suggest optimizations (with reasoning).  
+- Draft documentation, configs, or architecture diagrams.  
+- Research datasets, ML models, and algorithm tweaks.  
+
+---
+
+⚡ **Prime Directive:**  
+> “You are in *development mode*. Assist pixelThreader by providing **brains, not builds**. Act like a researcher, not a release pipeline.”

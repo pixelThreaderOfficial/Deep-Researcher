@@ -1,0 +1,208 @@
+openapi: 3.0.4
+info:
+  title: Deep Researcher - Model Management API
+  version: 1.0.0
+  description: API for managing models, authentication, and related operations in the deep researcher system.
+
+servers:
+  - url: http://localhost:3104
+    description: Development server
+
+paths:
+  /api/dr/v0/models/list:
+    post:
+      summary: List all models
+      operationId: listModels
+      requestBody:
+        required: true
+        content:
+          application/json:
+              schema:
+                type: object
+                properties:
+                  models:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Model"
+      responses:
+        "200":
+          description: Users added successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  models:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Model"
+                  message:
+                    type: string
+                    example: "Users added successfully"
+        "400":
+          description: Bad request - Missing models
+          content:
+            application/json:
+              schema:
+                type: object
+                description: "Bad request error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                description: "Internal server error"
+
+components:
+  schemas:
+    Model:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          example: 101
+        first_name:
+          type: string
+          example: "Rajesh"
+        last_name:
+          type: string
+          example: "Kumar"
+        username:
+          type: string
+          example: "rajesh_kumar"
+        email:
+          type: string
+          format: email
+          example: "rajesh.kumar@school.edu.in"
+        phone:
+          type: string
+          example: "+91 9876543210"
+        password_hash:
+          type: string
+          format: password
+          example: "$2a$12$examplehashedpassword"
+        role:
+          type: string
+          example: "teacher"
+        designation:
+          type: string
+          example: "Senior Teacher"
+        date_joined:
+          type: string
+          format: date
+          example: "2025-01-01"
+        department_id:
+          type: integer
+          description: Foreign key referencing Department
+          example: 3
+        address:
+          type: string
+          example: "123 Street, City, State, 123456"
+        profile_picture_url:
+          type: string
+          format: uri
+          example: "https://example.com/uploads/profile.jpg"
+        permission_id:
+          type: integer
+          example: 5
+        is_active:
+          type: boolean
+          example: true
+        last_active:
+          type: string
+          format: date-time
+          example: "2025-06-23T11:30:00Z"
+        gender:
+          type: string
+          enum: ["male", "female", "other"]
+          example: "male"
+        employee_id:
+          type: integer
+          nullable: true
+          example: 234
+        student_id:
+          type: integer
+          nullable: true
+          example: null
+        guardian_id:
+          type: integer
+          nullable: true
+          example: null
+        last_login:
+          type: string
+          format: date-time
+          example: "2025-06-22T18:20:00Z"
+        created_at:
+          type: string
+          format: date-time
+          example: "2024-01-01T10:00:00Z"
+        last_updated_at:
+          type: string
+          format: date-time
+          example: "2025-06-23T12:45:00Z"
+        created_by:
+          type: integer
+          example: 1
+        updated_by:
+          type: integer
+          example: 2
+        preferred_language:
+          type: string
+          enum: ["en", "hi", "bn"]
+          example: "en"
+        timezone:
+          type: string
+          example: "Asia/Kolkata"
+        status:
+          type: string
+          enum: ["active", "inactive", "pending", "locked"]
+          example: "active"
+        email_verified:
+          type: boolean
+          example: true
+        phone_verified:
+          type: boolean
+          example: false
+        mfa_enabled:
+          type: boolean
+          example: false
+        mfa_method:
+          type: string
+          enum: ["sms", "email", "authenticator_app", "none"]
+          example: "authenticator_app"
+        last_password_change:
+          type: string
+          format: date-time
+          example: "2025-06-01T09:00:00Z"
+        failed_login_attempts:
+          type: integer
+          example: 0
+        locked_until:
+          type: string
+          format: date-time
+          nullable: true
+          example: null
+        external_id:
+          type: string
+          example: "ext-abc-123"
+        metadata:
+          type: object
+          additionalProperties: true
+          example: { "customField": "value", "preferences": { "dark_mode": true } }
+
+
+
+
+
+
+
+
+
+
+
+

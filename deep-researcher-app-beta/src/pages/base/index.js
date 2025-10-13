@@ -1,0 +1,8 @@
+export { default as Settings } from './Settings'
+export { default as Models } from './Models'
+export { default as Researches } from './_manager/Researches'
+export { default as Research } from './_manager/Research'
+export { default as Files } from './_manager/Files'
+export { default as File } from './_manager/File'
+export { default as FilePreview } from './_manager/FilePreview'
+export { default as FilePreviewModal } from './_manager/FilePreviewModal'

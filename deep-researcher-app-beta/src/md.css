@@ -1,0 +1,144 @@
+/* Markdown (react-markdown) dark theme overrides - no Tailwind theme() usage */
+
+.md,
+.md .prose {
+    max-width: none;
+    line-height: 1.7;
+    color: #e5e7eb;
+    /* gray-200 */
+}
+
+.md h1,
+.md h2,
+.md h3,
+.md h4,
+.md .prose h1,
+.md .prose h2,
+.md .prose h3,
+.md .prose h4 {
+    margin-top: 1.25em;
+    margin-bottom: 0.6em;
+    letter-spacing: 0.2px;
+}
+
+.md p,
+.md .prose p {
+    margin: 0.8em 0;
+}
+
+.md a,
+.md .prose a {
+    color: #60a5fa;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.md ul,
+.md .prose ul {
+    list-style: disc;
+    padding-left: 1.4rem;
+}
+
+.md ol,
+.md .prose ol {
+    list-style: decimal;
+    padding-left: 1.4rem;
+}
+
+.md code,
+.md .prose code {
+    background: rgb(31 41 55 / 0.6);
+    border: 1px solid rgb(55 65 81 / 0.6);
+    border-radius: 6px;
+    padding: 0.15rem 0.35rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+/* .md pre,
+.md .prose pre {
+    background: rgb(17 24 39 / 0.9);
+    border: 1px solid rgb(55 65 81 / 0.7);
+    border-radius: 10px;
+    padding: 0.85rem 1rem;
+    overflow: auto;
+} */
+
+.md blockquote,
+.md .prose blockquote {
+    border-left: 3px solid rgb(99 102 241);
+    padding-left: 0.9rem;
+    color: rgb(209 213 219);
+    background: rgba(88, 28, 135, 0.15);
+}
+
+.md table,
+.md .prose table {
+    width: 100%;
+    border-collapse: collapse;
+    overflow: hidden;
+    border-radius: 10px;
+}
+
+.md th,
+.md td,
+.md .prose th,
+.md .prose td {
+    border: 1px solid rgb(55 65 81 / 0.6);
+    padding: 0.5rem 0.75rem;
+}
+
+.md th,
+.md .prose th {
+    background: rgb(31 41 55 / 0.6);
+}
+
+.md img,
+.md .prose img {
+    border-radius: 10px;
+    margin: 0.5rem 0;
+}
+
+/* Thinking section styling */
+.md .thinking-section,
+.md .prose .thinking-section {
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(147, 51, 234, 0.1));
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    border-radius: 8px;
+    padding: 1rem;
+    margin: 1rem 0;
+    position: relative;
+    font-style: italic;
+}
+
+.md .thinking-section::before,
+.md .prose .thinking-section::before {
+    content: "💭";
+    position: absolute;
+    top: -8px;
+    left: 8px;
+    background: linear-gradient(135deg, #3b82f6, #9333ea);
+    border-radius: 50%;
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    border: 2px solid rgba(31, 41, 55, 0.9);
+}
+
+.md .thinking-section .thinking-label,
+.md .prose .thinking-section .thinking-label {
+    font-weight: 600;
+    color: #60a5fa;
+    margin-bottom: 0.5rem;
+    display: block;
+    font-style: normal;
+}
+
+.md .thinking-section p,
+.md .prose .thinking-section p {
+    margin: 0.5rem 0;
+    color: #cbd5e1;
+    opacity: 0.9;
+}
