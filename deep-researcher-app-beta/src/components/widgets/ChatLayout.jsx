@@ -1,22 +1,73 @@
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useEffect } from 'react'
 import { Outlet, useNavigate } from 'react-router-dom'
+import { invoke } from '@tauri-apps/api/core'
 import ChatSidebar from './ChatSidebar'
 import ChatHeader from './ChatHeader'
 
 const ChatLayout = () => {
     const navigate = useNavigate()
-    const [recentChats] = useState([
-        { id: 'ch_1', title: 'Chat 1', updatedAt: 'just now' },
-        { id: 'ch_2', title: 'Chat 2', updatedAt: '2 hours ago' },
-        { id: 'ch_3', title: 'Chat 3', updatedAt: 'yesterday' },
-    ])
+    const [recentChats, setRecentChats] = useState([])
+    const [isLoadingChats, setIsLoadingChats] = useState(false)
 
-    const handleNewChat = () => {
-        console.log('New chat')
+    // Load chats from database
+    const loadChatsFromDatabase = async () => {
+        try {
+            setIsLoadingChats(true)
+            const chats = await invoke('cmd_get_recent_chats', { limit: 50 })
+
+            // Convert database format to component format
+            const formattedChats = chats.map(chat => ({
+                id: chat.id,
+                title: chat.title,
+                updatedAt: new Date(chat.updated_at).toLocaleDateString(),
+            }))
+
+            setRecentChats(formattedChats)
+        } catch (error) {
+            console.error('Failed to load chats from database:', error)
+            // Fallback to empty array
+            setRecentChats([])
+        } finally {
+            setIsLoadingChats(false)
+        }
+    }
+
+    useEffect(() => {
+        loadChatsFromDatabase()
+    }, [])
+
+    const handleNewChat = async () => {
+        const newId = `ch_${Date.now()}`
+        try {
+            // Create chat in database
+            await invoke('cmd_create_chat', {
+                id: newId,
+                title: 'New Chat',
+                model: 'granite3-moe' // Default model
+            })
+
+            // Add welcome message to database
+            const welcomeMessage = { id: Date.now(), role: 'assistant', content: 'New chat started. What would you like to do?', createdAt: new Date().toISOString() }
+            await invoke('cmd_add_message', {
+                chatId: newId,
+                role: welcomeMessage.role,
+                content: welcomeMessage.content,
+                files: null
+            })
+
+            // Navigate to the new chat
+            navigate(`/chat/${newId}`)
+        } catch (error) {
+            console.error('Failed to create new chat:', error)
+            // Fallback: navigate to chat page anyway
+            navigate(`/chat/${newId}`)
+        }
+        // Refresh chats list after creating new chat
+        setTimeout(() => loadChatsFromDatabase(), 100)
     }
 
     const handleSelectChat = (chatId) => {
-        console.log('Select chat:', chatId)
+        navigate(`/chat/${chatId}`)
     }
 
     const chatInfo = useMemo(() => ({

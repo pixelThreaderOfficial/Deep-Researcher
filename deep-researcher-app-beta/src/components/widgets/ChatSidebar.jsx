@@ -296,7 +296,7 @@ const ChatSidebar = ({
                     >
                         {isExpanded ? (
                             <button
-                                onClick={() => { }}
+                                onClick={() => { navigate('/app/researches') }}
                                 className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-gray-300 hover:bg-gray-800/60 transition-colors"
                             >
                                 <BookOpen className="w-4 h-4" />
@@ -320,7 +320,7 @@ const ChatSidebar = ({
                         ) : (
                             <Tooltip>
                                 <TooltipTrigger>
-                                    <button className="p-2 cursor-pointer text-gray-400 hover:text-gray-200" title="Library">
+                                    <button onClick={() => { navigate('/app/researches') }} className="p-2 cursor-pointer text-gray-400 hover:text-gray-200" title="Library">
                                         <BookOpen className="w-4 h-4" />
                                     </button>
                                 </TooltipTrigger>
@@ -387,53 +387,6 @@ const ChatSidebar = ({
                                 </TooltipTrigger>
                                 <TooltipContent side="right" align="center" className="bg-slate-900 text-gray-200 border border-gray-800" hideArrow={true} sideOffset={10}>
                                     <p>Files</p>
-                                </TooltipContent>
-                            </Tooltip>
-                        )}
-                    </motion.div>
-
-                    {/* Models */}
-                    <motion.div
-                        animate={{
-                            flexDirection: isExpanded ? 'row' : 'column',
-                            alignItems: 'center',
-                            gap: isExpanded ? 8 : 4,
-                            marginBottom: isExpanded ? 0 : 16
-                        }}
-                        transition={{ type: 'spring', stiffness: 260, damping: 26 }}
-                    >
-                        {isExpanded ? (
-                            <button
-                                onClick={() => { }}
-                                className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-gray-300 hover:bg-gray-800/60 transition-colors"
-                            >
-                                <Cpu className="w-4 h-4" />
-                                <div className="flex flex-col text-start ps-3">
-                                    <motion.span
-                                        className="truncate"
-                                        animate={{ opacity: isExpanded ? 1 : 0 }}
-                                        transition={{ duration: 0.2 }}
-                                    >
-                                        Models
-                                    </motion.span>
-                                    <motion.span
-                                        className="truncate text-xs text-gray-500"
-                                        animate={{ opacity: isExpanded ? 1 : 0 }}
-                                        transition={{ duration: 0.2 }}
-                                    >
-                                        Manage your AI models.
-                                    </motion.span>
-                                </div>
-                            </button>
-                        ) : (
-                            <Tooltip>
-                                <TooltipTrigger>
-                                    <button className="p-2 cursor-pointer text-gray-400 hover:text-gray-200" title="Models">
-                                        <Cpu className="w-4 h-4" />
-                                    </button>
-                                </TooltipTrigger>
-                                <TooltipContent side="right" align="center" className="bg-slate-900 text-gray-200 border border-gray-800" hideArrow={true} sideOffset={10}>
-                                    <p>Models</p>
                                 </TooltipContent>
                             </Tooltip>
                         )}
@@ -542,30 +495,6 @@ const ChatSidebar = ({
                     </motion.div>
                 )}
             </AnimatePresence>
-
-            {/* Bottom Profile */}
-            <div className={cn('mt-auto p-3 border-t border-gray-900/70', !isExpanded && 'flex items-center justify-center')}>
-                <div className={cn('flex items-center gap-3', !isExpanded && 'gap-0')}>
-                    <Avatar>
-                        <AvatarFallback className="bg-gray-800 text-gray-200">U</AvatarFallback>
-                    </Avatar>
-                    <AnimatePresence initial={false}>
-                        {isExpanded && (
-                            <motion.div
-                                key="profiletxt"
-                                className="leading-tight min-w-0"
-                                initial={{ opacity: 0, x: -8 }}
-                                animate={{ opacity: 1, x: 0 }}
-                                exit={{ opacity: 0, x: -8 }}
-                                transition={{ duration: 0.15 }}
-                            >
-                                <div className="text-sm text-gray-100 truncate">Boss</div>
-                                <div className="text-xs text-gray-500 truncate">boss@example.com</div>
-                            </motion.div>
-                        )}
-                    </AnimatePresence>
-                </div>
-            </div>
         </motion.aside>
     )
 }

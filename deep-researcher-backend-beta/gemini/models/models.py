@@ -12,6 +12,8 @@ def datetime_to_str(obj):
 MODELS_LIST = [
     {
         "name": "Gemini 2.5 Pro",
+        "provider": "Google",
+        "provider_type": "online",
         "tag": "OUR MOST ADVANCED MODEL",
         "description": "According to Google, this is their state-of-the-art thinking model, capable of reasoning over complex problems in code, math, and STEM, as well as analyzing large datasets, codebases, and documents using long context.",
         "pricing_docs": "https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-pro",
@@ -48,6 +50,8 @@ MODELS_LIST = [
     },
     {
         "name": "Gemini 2.5 Pro Preview TTS",
+        "provider": "Google",
+        "provider_type": "cloud",
         "tag": "OUR MOST ADVANCED MODEL",
         "description": "According to Google, this is their state-of-the-art thinking model, capable of reasoning over complex problems in code, math, and STEM, as well as analyzing large datasets, codebases, and documents using long context.",
         "pricing_docs": "https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-pro",
@@ -76,6 +80,8 @@ MODELS_LIST = [
     },
     {
         "name": "Gemini 2.5 Flash",
+        "provider": "Google",
+        "provider_type": "cloud",
         "tag": "FAST AND INTELLIGENT",
         "description": "According to Google, this is their best model in terms of price-performance, offering well-rounded capabilities. 2.5 Flash is best for large scale processing, low-latency, high volume tasks that require thinking, and agentic use cases.",
         "pricing_docs": "https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash",
@@ -112,6 +118,8 @@ MODELS_LIST = [
     },
     {
         "name": "Gemini 2.5 Flash Preview 09-2025",
+        "provider": "Google",
+        "provider_type": "cloud",
         "tag": "FAST AND INTELLIGENT",
         "description": "According to Google, this is their best model in terms of price-performance, offering well-rounded capabilities. 2.5 Flash is best for large scale processing, low-latency, high volume tasks that require thinking, and agentic use cases.",
         "pricing_docs": "https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash",
@@ -148,6 +156,8 @@ MODELS_LIST = [
     },
     {
         "name": "Gemini 2.5 Flash Image",
+        "provider": "Google",
+        "provider_type": "cloud",
         "tag": "FAST AND INTELLIGENT",
         "description": "According to Google, this is their best model in terms of price-performance, offering well-rounded capabilities. 2.5 Flash is best for large scale processing, low-latency, high volume tasks that require thinking, and agentic use cases.",
         "pricing_docs": "https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash",
@@ -176,6 +186,8 @@ MODELS_LIST = [
     },
     {
         "name": "Gemini 2.5 Flash Preview TTS",
+        "provider": "Google",
+        "provider_type": "cloud",
         "tag": "FAST AND INTELLIGENT",
         "description": "According to Google, this is their state-of-the-art thinking model, capable of reasoning over complex problems in code, math, and STEM, as well as analyzing large datasets, codebases, and documents using long context.",
         "pricing_docs": "https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash",
@@ -204,6 +216,8 @@ MODELS_LIST = [
     },
     {
         "name": "Gemini 2.5 Flash-Lite",
+        "provider": "Google",
+        "provider_type": "cloud",
         "tag": "ULTRA FAST",
         "description": "According to Google, this is their fastest flash model optimized for cost-efficiency and high throughput.",
         "pricing_docs": "https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash-lite",
@@ -240,6 +254,8 @@ MODELS_LIST = [
     },
     {
         "name": "Gemini 2.5 Flash-Lite Preview 09-2025",
+        "provider": "Google",
+        "provider_type": "cloud",
         "tag": "ULTRA FAST",
         "description": "According to Google, this is their best model in terms of price-performance, offering well-rounded capabilities. 2.5 Flash is best for large scale processing, low-latency, high volume tasks that require thinking, and agentic use cases.",
         "pricing_docs": "https://ai.google.dev/gemini-api/docs/pricing#gemini-2.5-flash-lite",
@@ -279,14 +295,14 @@ MODELS_LIST = [
 
 def get_available_models():
     try:
-        return json.dumps(MODELS_LIST, default=datetime_to_str)
+        return MODELS_LIST
     except Exception as e:
         return {"error": "Error getting available models", "message": str(e)}
 
 
 def get_model_names():
     try:
-        return [model["name"] for model in MODELS_LIST]
+        return [(model["name"], model["provider"], model["provider_type"], model["code"]) for model in MODELS_LIST]
     except Exception as e:
         return {"error": "Error getting model names", "message": str(e)}
 

@@ -226,6 +226,7 @@ def db_finish_success(
 
 def db_finish_failure(
     export_id: int,
+    output_path: Optional[str],
     message: str,
     error: str,
     metadata: Optional[Dict[str, Any]] = None,

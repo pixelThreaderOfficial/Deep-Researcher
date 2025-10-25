@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
+import axios from 'axios';
 import { invoke } from '@tauri-apps/api/core';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -132,27 +133,38 @@ const AIInput = () => {
 
     const navigate = useNavigate();
 
-    // Fetch available models and active models from Ollama API
+    // Fetch available models from backend API
     const fetchAvailableModels = async () => {
         setIsLoadingModels(true);
         setModelsError(null);
         try {
-            // Fetch both available and active models
-            const [modelNames, activeModelNames] = await Promise.all([
-                invoke('cmd_get_models'),
-                invoke('cmd_get_active_models')
-            ]);
+            const response = await axios.get('http://localhost:8000/models');
 
-            // Convert model names to the expected format with descriptions
-            const modelsWithDescriptions = modelNames.map(name => ({
-                id: name.toLowerCase().replace(/[^a-z0-9]/g, '-'),
-                name: name,
-                description: getModelDescription(name),
-                isActive: activeModelNames.includes(name)
-            }));
+            if (!response.data.success) {
+                throw new Error(response.data.message || response.data.error || 'Failed to fetch models');
+            }
+
+            const modelsData = response.data.models;
+
+            // Convert model data to the expected format with descriptions
+            // Each model is [display_name, provider, type, model_id]
+            const modelsWithDescriptions = modelsData.map(modelArray => {
+                const [displayName, provider, type, modelId] = modelArray;
+                return {
+                    id: modelId.toLowerCase().replace(/[^a-z0-9]/g, '-'),
+                    name: displayName,
+                    description: type === 'offline'
+                        ? `Local Ollama model | Model by ${provider}`
+                        : `Connected to ${provider}`,
+                    isActive: true, // All models from API are considered active
+                    provider: provider,
+                    type: type, // "cloud" or "offline"
+                    modelId: modelId
+                };
+            });
 
             setAvailableModels(modelsWithDescriptions);
-            setActiveModels(activeModelNames);
+            setActiveModels(modelsWithDescriptions.map(m => m.name)); // All fetched models are active
 
             // Set default model if current selected model is not in the list
             if (modelsWithDescriptions.length > 0 && !modelsWithDescriptions.find(m => m.name === selectedModel)) {
@@ -706,21 +718,7 @@ const AIInput = () => {
                                                     )}
                                                 </motion.button>
                                             </DropdownMenuTrigger>
-                                            <DropdownMenuContent className="bg-gray-800 border border-gray-600 rounded-lg shadow-lg z-50" sideOffset={8}>
-                                                {/* Metadata button */}
-                                                <div className="px-3 py-2 border-b border-gray-700">
-                                                    <motion.button
-                                                        whileHover={{ scale: 1.02 }}
-                                                        whileTap={{ scale: 0.98 }}
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            fetchModelMetadata();
-                                                        }}
-                                                        className="w-full text-left text-sm text-blue-400 hover:text-blue-300 hover:bg-gray-700 px-2 py-1 rounded transition-colors"
-                                                    >
-                                                        📊 View Model Metadata (Console)
-                                                    </motion.button>
-                                                </div>
+                                            <DropdownMenuContent className="bg-gray-800 border border-gray-600 rounded-lg shadow-lg z-50 custom-scrollbar" sideOffset={8}>
 
                                                 {isLoadingModels ? (
                                                     <div className="px-3 py-2 text-gray-400 text-sm flex items-center gap-2">
@@ -736,59 +734,98 @@ const AIInput = () => {
                                                         No models available
                                                     </div>
                                                 ) : (
-                                                    models.map((model) => (
-                                                        <div key={model.id} className="px-3 py-2 border-b border-gray-700 last:border-b-0">
-                                                            <div className="flex items-center justify-between">
-                                                                <div className="flex-1">
-                                                                    <div className="font-medium text-gray-200">{model.name}</div>
-                                                                    <div className="text-xs text-gray-400">{model.description}</div>
-                                                                    {model.isActive && (
-                                                                        <div className="text-xs text-green-400 mt-1 flex items-center gap-1">
-                                                                            <div className="w-2 h-2 bg-green-400 rounded-full"></div>
-                                                                            Active in memory
+                                                    <>
+                                                        {/* Cloud Providers Section */}
+                                                        {models.filter(model => model.type === 'cloud').length > 0 && (
+                                                            <>
+                                                                <div className="px-3 py-2 text-xs font-semibold text-gray-300 bg-gray-700/50 border-b border-gray-600">
+                                                                    Cloud Providers
+                                                                </div>
+                                                                {models.filter(model => model.type === 'cloud').map((model) => (
+                                                                    <div key={model.id} className="px-3 py-2 border-b border-gray-700 last:border-b-0">
+                                                                        <div className="flex items-center justify-between">
+                                                                            <div className="flex-1">
+                                                                                <div className="font-medium text-gray-200">{model.name}</div>
+                                                                                <div className="text-xs text-gray-400">{model.description}</div>
+                                                                            </div>
+                                                                            <div className="flex items-center gap-2 ml-3">
+                                                                                <motion.button
+                                                                                    whileHover={{ scale: 1.05 }}
+                                                                                    whileTap={{ scale: 0.95 }}
+                                                                                    onClick={(e) => {
+                                                                                        e.stopPropagation();
+                                                                                        setSelectedModel(model.name);
+                                                                                    }}
+                                                                                    className={`px-2 py-1 text-xs rounded transition-colors ${selectedModel === model.name
+                                                                                        ? 'bg-blue-600 text-white'
+                                                                                        : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
+                                                                                        }`}
+                                                                                >
+                                                                                    Select
+                                                                                </motion.button>
+                                                                            </div>
                                                                         </div>
-                                                                    )}
+                                                                    </div>
+                                                                ))}
+                                                            </>
+                                                        )}
+
+                                                        {/* Offline Models Section */}
+                                                        {models.filter(model => model.type === 'offline').length > 0 && (
+                                                            <>
+                                                                <div className="px-3 py-2 text-xs font-semibold text-gray-300 bg-gray-700/50 border-b border-gray-600 border-t">
+                                                                    Offline Models
                                                                 </div>
-                                                                <div className="flex items-center gap-2 ml-3">
-                                                                    <motion.button
-                                                                        whileHover={{ scale: 1.05 }}
-                                                                        whileTap={{ scale: 0.95 }}
-                                                                        onClick={(e) => {
-                                                                            e.stopPropagation();
-                                                                            setSelectedModel(model.name);
-                                                                        }}
-                                                                        className={`px-2 py-1 text-xs rounded transition-colors ${selectedModel === model.name
-                                                                            ? 'bg-blue-600 text-white'
-                                                                            : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
-                                                                            }`}
-                                                                    >
-                                                                        Select
-                                                                    </motion.button>
-                                                                    {!model.isActive && (
-                                                                        <motion.button
-                                                                            whileHover={{ scale: 1.05 }}
-                                                                            whileTap={{ scale: 0.95 }}
-                                                                            onClick={async (e) => {
-                                                                                e.stopPropagation();
-                                                                                setSelectedModel(model.name);
-                                                                                await loadSelectedModel();
-                                                                                // Refresh the model list to show updated status
-                                                                                await fetchAvailableModels();
-                                                                            }}
-                                                                            disabled={isLoadingModel}
-                                                                            className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-500 disabled:bg-gray-500 disabled:cursor-not-allowed transition-colors"
-                                                                        >
-                                                                            {isLoadingModel ? (
-                                                                                <Loader2 className="w-3 h-3 animate-spin" />
-                                                                            ) : (
-                                                                                'Load'
-                                                                            )}
-                                                                        </motion.button>
-                                                                    )}
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    ))
+                                                                {models.filter(model => model.type === 'offline').map((model) => (
+                                                                    <div key={model.id} className="px-3 py-2 border-b border-gray-700 last:border-b-0">
+                                                                        <div className="flex items-center justify-between">
+                                                                            <div className="flex-1">
+                                                                                <div className="font-medium text-gray-200">{model.name}</div>
+                                                                                <div className="text-xs text-gray-400">{model.description}</div>
+                                                                            </div>
+                                                                            <div className="flex items-center gap-2 ml-3">
+                                                                                <motion.button
+                                                                                    whileHover={{ scale: 1.05 }}
+                                                                                    whileTap={{ scale: 0.95 }}
+                                                                                    onClick={(e) => {
+                                                                                        e.stopPropagation();
+                                                                                        setSelectedModel(model.name);
+                                                                                    }}
+                                                                                    className={`px-2 py-1 text-xs rounded transition-colors ${selectedModel === model.name
+                                                                                        ? 'bg-blue-600 text-white'
+                                                                                        : 'bg-gray-600 text-gray-300 hover:bg-gray-500'
+                                                                                        }`}
+                                                                                >
+                                                                                    Select
+                                                                                </motion.button>
+                                                                                {!model.isActive && (
+                                                                                    <motion.button
+                                                                                        whileHover={{ scale: 1.05 }}
+                                                                                        whileTap={{ scale: 0.95 }}
+                                                                                        onClick={async (e) => {
+                                                                                            e.stopPropagation();
+                                                                                            setSelectedModel(model.name);
+                                                                                            await loadSelectedModel();
+                                                                                            // Refresh the model list to show updated status
+                                                                                            await fetchAvailableModels();
+                                                                                        }}
+                                                                                        disabled={isLoadingModel}
+                                                                                        className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-500 disabled:bg-gray-500 disabled:cursor-not-allowed transition-colors"
+                                                                                    >
+                                                                                        {isLoadingModel ? (
+                                                                                            <Loader2 className="w-3 h-3 animate-spin" />
+                                                                                        ) : (
+                                                                                            'Load'
+                                                                                        )}
+                                                                                    </motion.button>
+                                                                                )}
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                ))}
+                                                            </>
+                                                        )}
+                                                    </>
                                                 )}
                                             </DropdownMenuContent>
                                         </DropdownMenu>

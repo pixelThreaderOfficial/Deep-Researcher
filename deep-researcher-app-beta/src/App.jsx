@@ -5,6 +5,8 @@ import Chat from "./pages/Chat";
 import SettingsPage from "./pages/base/Settings";
 import Files from "./pages/base/_manager/Files";
 import FileView from "./pages/base/_manager/File";
+import Researches from "./pages/base/_manager/Researches";
+import Research from "./pages/base/_manager/Research";
 import { AllModels, LLMDetail, ManageModels } from "./pages/settings";
 
 // Main App component
@@ -20,6 +22,8 @@ const App = () => {
       <Route path="/app" element={<ChatLayout />}>
         <Route path="files" element={<Files />} />
         <Route path="files/:category" element={<FileView />} />
+        <Route path="researches" element={<Researches />} />
+        <Route path="research/:id" element={<Research />} />
         <Route path="settings" element={<SettingsPage />}>
           <Route path="models" element={<AllModels />}>
             <Route path="manage" element={<ManageModels />} />
