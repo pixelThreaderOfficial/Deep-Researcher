@@ -585,7 +585,7 @@ async def _scrape_urls_async(urls: List[str]) -> Dict[str, str]:
 def web_search(
     query: str,
     region: str = "us-en",
-    safesearch: str = "moderate",
+    safesearch: str = "on",
     timelimit: Optional[str] = None,
     max_results: Optional[int] = 10,
     page: int = 1,

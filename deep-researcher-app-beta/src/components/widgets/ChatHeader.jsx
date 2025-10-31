@@ -1,11 +1,13 @@
 import React, { useState } from 'react'
-import { Bot, Settings, Info, MessageSquare, Clock, Cpu, FileText, Hash, Database, Zap, TrendingUp } from 'lucide-react'
+import { Bot, Settings, Info, MessageSquare, Clock, Cpu, FileText, Hash, Database, Zap, TrendingUp, Edit3, Check, X } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import ThisChatSettings from './ThisChatSettings'
 
-const ChatHeader = ({ onOpenSettings, model, chatInfo }) => {
+const ChatHeader = ({ onOpenSettings, model, chatInfo, chatTitle, onUpdateTitle, sessionId }) => {
     const [isInfoOpen, setIsInfoOpen] = useState(false)
     const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false)
+    const [isEditingTitle, setIsEditingTitle] = useState(false)
+    const [editingTitle, setEditingTitle] = useState('')
     const [chatSettings, setChatSettings] = useState({
         systemPrompt: '',
         promptTemplate: 'default',
@@ -30,6 +32,41 @@ const ChatHeader = ({ onOpenSettings, model, chatInfo }) => {
         console.log('Chat settings saved:', newSettings)
     }
 
+    const handleStartEditingTitle = () => {
+        setEditingTitle(chatTitle || 'New Chat')
+        setIsEditingTitle(true)
+    }
+
+    const handleSaveTitle = async () => {
+        const newTitle = editingTitle.trim()
+        if (newTitle && newTitle !== chatTitle && sessionId) {
+            try {
+                const response = await fetch(`http://localhost:8000/api/sessions/${sessionId}/title`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ title: newTitle }),
+                })
+                const data = await response.json()
+
+                if (data.success) {
+                    onUpdateTitle?.(newTitle)
+                } else {
+                    console.error('Failed to update title:', data.error)
+                }
+            } catch (error) {
+                console.error('Error updating title:', error)
+            }
+        }
+        setIsEditingTitle(false)
+    }
+
+    const handleCancelTitleEdit = () => {
+        setEditingTitle('')
+        setIsEditingTitle(false)
+    }
+
     return (
         <div className="w-full px-4 py-3 border-b border-gray-800 bg-gray-900/60">
             {/* Header Content */}
@@ -38,10 +75,42 @@ const ChatHeader = ({ onOpenSettings, model, chatInfo }) => {
                     <div className="p-2 rounded-lg bg-gray-800 border border-gray-700">
                         <Bot className="w-5 h-5 text-blue-400" />
                     </div>
-                    <div>
-                        <div className="font-semibold">Chatting Assistant Area</div>
+                    <div className="flex-1 min-w-0">
+                        {isEditingTitle ? (
+                            <div className="flex items-center gap-2">
+                                <input
+                                    type="text"
+                                    value={editingTitle}
+                                    onChange={(e) => setEditingTitle(e.target.value)}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') handleSaveTitle()
+                                        if (e.key === 'Escape') handleCancelTitleEdit()
+                                    }}
+                                    className="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-gray-100 focus:border-blue-500 focus:outline-none"
+                                    autoFocus
+                                    onBlur={handleCancelTitleEdit}
+                                />
+                                <button
+                                    onClick={handleSaveTitle}
+                                    className="p-1 text-green-400 hover:text-green-300"
+                                >
+                                    <Check className="w-4 h-4" />
+                                </button>
+                                <button
+                                    onClick={handleCancelTitleEdit}
+                                    className="p-1 text-red-400 hover:text-red-300"
+                                >
+                                    <X className="w-4 h-4" />
+                                </button>
+                            </div>
+                        ) : (
+                            <div className="flex items-center gap-2 cursor-pointer group" onClick={handleStartEditingTitle}>
+                                <div className="font-semibold truncate">{chatTitle || 'New Chat'}</div>
+                                <Edit3 className="w-4 h-4 text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                            </div>
+                        )}
                         <div className="text-xs text-gray-400 flex items-center gap-2">
-                            <span>Always-on, privacy-first</span>
+                            <span>Session: {sessionId || 'New'}</span>
                             {model && (
                                 <>
                                     <span>•</span>

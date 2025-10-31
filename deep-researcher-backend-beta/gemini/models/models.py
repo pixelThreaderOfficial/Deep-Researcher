@@ -302,7 +302,7 @@ def get_available_models():
 
 def get_model_names():
     try:
-        return [(model["name"], model["provider"], model["provider_type"], model["code"]) for model in MODELS_LIST]
+        return [(model["name"], model["provider"], model["provider_type"], model["code"], model["suported_inputs"], model["supported_outputs"]) for model in MODELS_LIST]
     except Exception as e:
         return {"error": "Error getting model names", "message": str(e)}
 

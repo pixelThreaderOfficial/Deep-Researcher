@@ -1,6 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react'
 import { Outlet, useNavigate } from 'react-router-dom'
-import { invoke } from '@tauri-apps/api/core'
 import ChatSidebar from './ChatSidebar'
 import ChatHeader from './ChatHeader'
 
@@ -9,22 +8,30 @@ const ChatLayout = () => {
     const [recentChats, setRecentChats] = useState([])
     const [isLoadingChats, setIsLoadingChats] = useState(false)
 
-    // Load chats from database
+    // Load sessions from API
     const loadChatsFromDatabase = async () => {
         try {
             setIsLoadingChats(true)
-            const chats = await invoke('cmd_get_recent_chats', { limit: 50 })
+            const response = await fetch('http://localhost:8000/api/sessions?limit=50&offset=0')
+            const data = await response.json()
 
-            // Convert database format to component format
-            const formattedChats = chats.map(chat => ({
-                id: chat.id,
-                title: chat.title,
-                updatedAt: new Date(chat.updated_at).toLocaleDateString(),
-            }))
+            if (data.success && data.sessions) {
+                // Convert to component format
+                const formattedChats = data.sessions.map(session => ({
+                    id: session.session_id,
+                    title: session.title || `Chat ${session.id}`,
+                    updatedAt: new Date(session.updated_at * 1000).toLocaleDateString(),
+                    messageCount: session.stats?.total_messages || 0,
+                    model: session.stats?.unique_models === 1 ? 'Single Model' : 'Multiple Models'
+                }))
 
-            setRecentChats(formattedChats)
+                setRecentChats(formattedChats)
+            } else {
+                console.error('Failed to load sessions:', data.error)
+                setRecentChats([])
+            }
         } catch (error) {
-            console.error('Failed to load chats from database:', error)
+            console.error('Failed to load chats:', error)
             // Fallback to empty array
             setRecentChats([])
         } finally {
@@ -37,37 +44,72 @@ const ChatLayout = () => {
     }, [])
 
     const handleNewChat = async () => {
-        const newId = `ch_${Date.now()}`
+        // Generate a new UUID for the session (frontend generates, backend will use it)
+        const newSessionId = `550e8400-e29b-41d4-a716-${Date.now().toString(16).padStart(12, '0')}`
+
         try {
-            // Create chat in database
-            await invoke('cmd_create_chat', {
-                id: newId,
-                title: 'New Chat',
-                model: 'granite3-moe' // Default model
-            })
-
-            // Add welcome message to database
-            const welcomeMessage = { id: Date.now(), role: 'assistant', content: 'New chat started. What would you like to do?', createdAt: new Date().toISOString() }
-            await invoke('cmd_add_message', {
-                chatId: newId,
-                role: welcomeMessage.role,
-                content: welcomeMessage.content,
-                files: null
-            })
-
-            // Navigate to the new chat
-            navigate(`/chat/${newId}`)
+            // Navigate to the new chat first (it will create the session when first message is sent)
+            navigate(`/chat/${newSessionId}`)
         } catch (error) {
             console.error('Failed to create new chat:', error)
             // Fallback: navigate to chat page anyway
-            navigate(`/chat/${newId}`)
+            navigate(`/chat/${newSessionId}`)
         }
+
         // Refresh chats list after creating new chat
         setTimeout(() => loadChatsFromDatabase(), 100)
     }
 
     const handleSelectChat = (chatId) => {
         navigate(`/chat/${chatId}`)
+    }
+
+    const handleRenameChat = async (chatId, newTitle) => {
+        try {
+            const response = await fetch(`http://localhost:8000/api/sessions/${chatId}/title`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ title: newTitle }),
+            })
+            const data = await response.json()
+
+            if (data.success) {
+                // Refresh the chats list
+                loadChatsFromDatabase()
+            } else {
+                console.error('Failed to rename chat:', data.error)
+                alert('Failed to rename chat')
+            }
+        } catch (error) {
+            console.error('Error renaming chat:', error)
+            alert('Error renaming chat')
+        }
+    }
+
+    const handleDeleteChat = async (chatId) => {
+        try {
+            const response = await fetch(`http://localhost:8000/api/sessions/${chatId}`, {
+                method: 'DELETE',
+            })
+            const data = await response.json()
+
+            if (data.success) {
+                // Refresh the chats list
+                loadChatsFromDatabase()
+                // If the deleted chat was active, navigate away
+                if (chatId === 'ch_1') { // You might want to track the active chat ID properly
+                    navigate('/')
+                }
+            } else {
+                console.error('Failed to delete chat:', data.error)
+                alert('Failed to delete chat')
+            }
+        } catch (error) {
+            console.error('Error deleting chat:', error)
+            alert('Error deleting chat')
+        }
     }
 
     const chatInfo = useMemo(() => ({
@@ -94,6 +136,8 @@ const ChatLayout = () => {
                     recentChats={recentChats}
                     onNewChat={handleNewChat}
                     onSelectChat={handleSelectChat}
+                    onRenameChat={handleRenameChat}
+                    onDeleteChat={handleDeleteChat}
                     activeChatId="ch_1"
                 />
 

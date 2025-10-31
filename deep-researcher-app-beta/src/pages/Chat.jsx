@@ -3,8 +3,6 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import ChatSidebar from '../components/widgets/ChatSidebar'
 import ChatHeader from '../components/widgets/ChatHeader'
 import ChatArea from '../components/widgets/ChatArea'
-import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
 
 const Chat = () => {
     const { id } = useParams()
@@ -14,42 +12,112 @@ const Chat = () => {
     const [activeChatId, setActiveChatId] = useState(initialId)
     const [isProcessing, setIsProcessing] = useState(false)
     const [messagesByChat, setMessagesByChat] = useState({})
-    const [model, setModel] = useState('granite3-moe')
+    const [model, setModel] = useState('gemini-2.5-flash')
     const [currentTaskId, setCurrentTaskId] = useState(null)
+    const [currentSession, setCurrentSession] = useState(null)
     const [isLoadingChat, setIsLoadingChat] = useState(false)
     const unlistenRefs = useRef({ stream: null, done: null })
+    const wsRef = useRef(null)
+    const currentStreamingMessageIdRef = useRef(null)
 
-    // Load chat and messages from database
-    const loadChatFromDatabase = async (chatId) => {
+    // Load session and messages from API
+    const loadChatFromDatabase = async (sessionId) => {
         try {
             setIsLoadingChat(true)
-            const [chatData, messagesData] = await Promise.all([
-                invoke('cmd_get_chat', { chatId }),
-                invoke('cmd_get_messages', { chatId })
+
+            // Load session details and messages in parallel
+            const [sessionResponse, messagesResponse] = await Promise.all([
+                fetch(`http://localhost:8000/api/sessions/${sessionId}`).catch(err => {
+                    console.warn('Session fetch failed:', err)
+                    return { ok: false, status: 404 }
+                }),
+                fetch(`http://localhost:8000/api/sessions/${sessionId}/messages?limit=100`).catch(err => {
+                    console.warn('Messages fetch failed:', err)
+                    return { ok: false, status: 404 }
+                })
             ])
 
-            if (chatData) {
-                setModel(chatData.model)
+            const sessionData = sessionResponse.ok ? await sessionResponse.json() : { success: false, error: 'Session not found' }
+            const messagesData = messagesResponse.ok ? await messagesResponse.json() : { success: false, error: 'Messages not found' }
+
+            if (sessionData.success && sessionData.session) {
+                // Set the model from session data
+                setModel(sessionData.session.stats?.unique_models === 1 ? 'gemini-2.0-flash' : 'gemini-2.5-flash')
+                // Store the current session data including title
+                setCurrentSession(sessionData.session)
             }
 
-            // Convert database messages to frontend format
-            const frontendMessages = messagesData.map(msg => ({
-                id: msg.id,
-                role: msg.role,
-                content: msg.content,
-                createdAt: msg.created_at,
-                responseTime: msg.response_time,
-                files: msg.files ? JSON.parse(msg.files) : undefined
-            }))
+            if (messagesData.success && messagesData.messages && messagesData.messages.length > 0) {
+                console.log('Loading messages for session:', sessionId, messagesData.messages)
 
+                // Convert API messages to frontend format
+                // Each API message contains both prompt and response, so create two frontend messages
+                const frontendMessages = []
+
+                messagesData.messages.forEach(msg => {
+                    // Add user message
+                    if (msg.prompt && msg.prompt.trim()) {
+                        frontendMessages.push({
+                            id: `${msg.chatid || msg.sno}_user`,
+                            role: 'user',
+                            content: msg.prompt.trim(),
+                            createdAt: new Date(msg.created_at * 1000).toISOString(),
+                            responseTime: msg.generation_time,
+                            files: msg.files ? JSON.parse(msg.files) : undefined
+                        })
+                    }
+
+                    // Add assistant message
+                    if (msg.response && msg.response.trim()) {
+                        frontendMessages.push({
+                            id: `${msg.chatid || msg.sno}_assistant`,
+                            role: 'assistant',
+                            content: msg.response.trim(),
+                            createdAt: new Date(msg.created_at * 1000).toISOString(),
+                            responseTime: msg.generation_time,
+                            files: undefined
+                        })
+                    }
+                })
+
+                // Sort by creation time
+                frontendMessages.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+
+                console.log('Converted messages:', frontendMessages)
+
+                setMessagesByChat(prev => ({
+                    ...prev,
+                    [sessionId]: frontendMessages
+                }))
+
+                return frontendMessages
+            } else {
+                console.log('No messages found for session:', sessionId)
+                // Empty session
+                setMessagesByChat(prev => ({
+                    ...prev,
+                    [sessionId]: []
+                }))
+                return []
+            }
+        } catch (error) {
+            console.error('Failed to load chat:', error, 'Session ID:', sessionId)
+
+            // Check if it's a 404 (session doesn't exist yet)
+            if (error.message && error.message.includes('404')) {
+                console.log('Session does not exist yet, creating empty session')
+                setMessagesByChat(prev => ({
+                    ...prev,
+                    [sessionId]: []
+                }))
+                return []
+            }
+
+            // For other errors, still create empty session
             setMessagesByChat(prev => ({
                 ...prev,
-                [chatId]: frontendMessages
+                [sessionId]: []
             }))
-
-            return frontendMessages
-        } catch (error) {
-            console.error('Failed to load chat from database:', error)
             return []
         } finally {
             setIsLoadingChat(false)
@@ -75,9 +143,12 @@ const Chat = () => {
         return Math.ceil(text.length / 4)
     }
 
-    // Calculate chat statistics
+    // Load chat statistics from API
     const chatStats = useMemo(() => {
         const messages = currentMessages || []
+
+        // If we have messages loaded, use local calculations
+        // Otherwise, stats will be loaded from API when available
         let totalTokens = 0
         let totalFiles = 0
         let contextTokens = 0
@@ -119,8 +190,7 @@ const Chat = () => {
             const wordCount = lastAssistantMessage.content ? lastAssistantMessage.content.split(/\s+/).filter(word => word.length > 0).length : 0
             const tokenCount = lastAssistantMessage.content ? estimateTokens(lastAssistantMessage.content) : 0
 
-            // Calculate approximate response time (this would need to be tracked during streaming)
-            // For now, we'll use a placeholder or estimate
+            // Use response time from message if available
             const responseTime = lastAssistantMessage.responseTime || null
 
             // Find the index of this assistant message to calculate context
@@ -162,119 +232,132 @@ const Chat = () => {
         }
     }, [currentMessages])
 
-    async function startAssistantStream(chatId, historyOverride = null, modelOverride = null) {
-        // Stop any previous running stream to avoid mixing outputs
-        if (currentTaskId) {
-            try { await invoke('cmd_force_stop', { taskId: currentTaskId }) } catch { }
-            if (unlistenRefs.current.stream) { unlistenRefs.current.stream(); unlistenRefs.current.stream = null }
-            if (unlistenRefs.current.done) { unlistenRefs.current.done(); unlistenRefs.current.done = null }
+    // WebSocket connection for streaming responses
+    const connectWebSocket = (sessionId, prompt, model = 'gemini-2.5-flash', thinking = false) => {
+        if (wsRef.current) {
+            wsRef.current.close()
         }
 
-        const history = historyOverride || buildOllamaMessagesFrom(messagesByChat[chatId])
-        const currentModel = modelOverride || model || 'granite3-moe'
-        try {
-            const taskId = await invoke('cmd_stream_chat_start', {
-                model: currentModel,
-                messages: history,
-            })
-            setCurrentTaskId(taskId)
-            const replyId = Date.now() + 1
-            const streamStartTime = Date.now()
-            const assistantMessage = {
-                id: replyId,
-                role: 'assistant',
-                content: '',
-                streaming: true,
-                createdAt: new Date().toISOString(),
-                streamStartTime
-            }
+        const ws = new WebSocket('ws://localhost:8000/ws/generate')
+        wsRef.current = ws
 
-            // Save initial assistant message to database
-            try {
-                await invoke('cmd_add_message', {
-                    chatId,
-                    role: assistantMessage.role,
-                    content: assistantMessage.content,
-                    files: null
-                })
-            } catch (error) {
-                console.error('Failed to save assistant message:', error)
-            }
-
-            setMessagesByChat(prev => ({
-                ...prev,
-                [chatId]: [...(prev[chatId] || []), assistantMessage]
+        ws.onopen = () => {
+            console.log('WebSocket connected for streaming')
+            ws.send(JSON.stringify({
+                prompt: prompt,
+                thinking: thinking,
+                model: model,
+                session_id: sessionId, // Include session_id for continuation
             }))
+        }
 
-            // Cleanup any previous listeners
-            if (unlistenRefs.current.stream) { unlistenRefs.current.stream(); unlistenRefs.current.stream = null }
-            if (unlistenRefs.current.done) { unlistenRefs.current.done(); unlistenRefs.current.done = null }
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data)
 
-            unlistenRefs.current.stream = await listen('ollama:stream', (event) => {
-                const payload = event?.payload || {}
-                if (payload.taskId !== taskId) return
-                const token = payload.token || ''
-                setMessagesByChat(prev => ({
-                    ...prev,
-                    [chatId]: (prev[chatId] || []).map(m => m.id === replyId ? { ...m, content: (m.content || '') + token } : m)
-                }))
-            })
+            if (data.chunk) {
+                // Append streaming text
+                setMessagesByChat(prev => {
+                    const newMessages = [...(prev[sessionId] || [])]
+                    const lastMessage = newMessages[newMessages.length - 1]
 
-            unlistenRefs.current.done = await listen('ollama:stream_done', async (event) => {
-                const payload = event?.payload || {}
-                if (payload.taskId !== taskId) return
-                const streamEndTime = Date.now()
-                const responseTime = (streamEndTime - streamStartTime) / 1000 // Convert to seconds
-
-                // Update the message in state first
-                const updatedMessage = await new Promise(resolve => {
-                    setMessagesByChat(prev => {
-                        const updated = (prev[chatId] || []).map(m => m.id === replyId ? {
-                            ...m,
-                            streaming: false,
-                            responseTime: responseTime.toFixed(2)
-                        } : m)
-                        const finalMessage = updated.find(m => m.id === replyId)
-                        resolve(finalMessage)
-                        return {
-                            ...prev,
-                            [chatId]: updated
+                    if (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming) {
+                        // Update existing streaming message
+                        lastMessage.content += data.chunk
+                    } else {
+                        // Create new streaming message
+                        const streamingMessage = {
+                            id: Date.now(),
+                            role: 'assistant',
+                            content: data.chunk,
+                            streaming: true,
+                            createdAt: new Date().toISOString()
                         }
-                    })
-                })
+                        newMessages.push(streamingMessage)
+                        currentStreamingMessageIdRef.current = streamingMessage.id
+                    }
 
-                // Save assistant message to database with statistics
-                try {
-                    const tokenCount = estimateTokens(updatedMessage.content)
-                    await invoke('cmd_update_message_stats', {
-                        messageId: replyId,
-                        responseTime,
-                        tokenCount
-                    })
-                } catch (error) {
-                    console.error('Failed to save message statistics:', error)
-                }
+                    return {
+                        ...prev,
+                        [sessionId]: newMessages
+                    }
+                })
+            } else if (data.done) {
+                // Streaming completed
+                setMessagesByChat(prev => {
+                    const newMessages = [...(prev[sessionId] || [])]
+                    const lastMessage = newMessages[newMessages.length - 1]
+
+                    if (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming) {
+                        lastMessage.streaming = false // Mark as completed
+                    }
+
+                    return {
+                        ...prev,
+                        [sessionId]: [...newMessages]
+                    }
+                })
 
                 setIsProcessing(false)
-                setCurrentTaskId(null)
-                if (unlistenRefs.current.stream) { unlistenRefs.current.stream(); unlistenRefs.current.stream = null }
-                if (unlistenRefs.current.done) { unlistenRefs.current.done(); unlistenRefs.current.done = null }
-            })
-        } catch (e) {
-            console.error('Failed to start stream:', e)
-            setIsProcessing(false)
-            setCurrentTaskId(null)
+                ws.close()
+                wsRef.current = null
+            } else if (data.error) {
+                // Handle error
+                console.error('WebSocket error:', data.error)
+                setMessagesByChat(prev => ({
+                    ...prev,
+                    [sessionId]: [...(prev[sessionId] || []), {
+                        id: Date.now(),
+                        role: 'assistant',
+                        content: `Error: ${data.error}`,
+                        createdAt: new Date().toISOString()
+                    }]
+                }))
+                setIsProcessing(false)
+                ws.close()
+                wsRef.current = null
+            }
         }
+
+        ws.onerror = (error) => {
+            console.error('WebSocket error:', error)
+            setMessagesByChat(prev => ({
+                ...prev,
+                [sessionId]: [...(prev[sessionId] || []), {
+                    id: Date.now(),
+                    role: 'assistant',
+                    content: 'Connection error. Please try again.',
+                    createdAt: new Date().toISOString()
+                }]
+            }))
+            setIsProcessing(false)
+        }
+
+        ws.onclose = () => {
+            console.log('WebSocket closed')
+            wsRef.current = null
+        }
+
+        return ws
     }
+
 
     // Load chat when component mounts or chat ID changes
     useEffect(() => {
+        console.log('Chat useEffect triggered:', { id, activeChatId, isLoadingChat })
         if (id && id !== activeChatId) {
+            console.log('Loading chat for new session ID:', id)
             setActiveChatId(id)
             // Load chat from database
             loadChatFromDatabase(id)
+        } else if (id && id === activeChatId) {
+            console.log('Session ID matches active chat ID, checking if messages are loaded')
+            const currentMessages = messagesByChat[id]
+            if (!currentMessages) {
+                console.log('No messages found for active chat, loading...')
+                loadChatFromDatabase(id)
+            }
         }
-    }, [id])
+    }, [id, activeChatId])
 
     useEffect(() => {
         const state = location.state || {}
@@ -292,98 +375,141 @@ const Chat = () => {
             if (!sessionStorage.getItem(seededKey)) {
                 sessionStorage.setItem(seededKey, '1')
 
-                // First create the chat in database if it doesn't exist
+                // Check if session exists, create if needed
                 const createChatIfNeeded = async () => {
                     try {
-                        const existingChat = await invoke('cmd_get_chat', { chatId: id })
-                        if (!existingChat) {
-                            await invoke('cmd_create_chat', {
-                                id,
-                                title: initialMsg.content.slice(0, 50) + (initialMsg.content.length > 50 ? '...' : ''),
-                                model: selectedModel || model
-                            })
+                        const response = await fetch(`http://localhost:8000/api/sessions/${id}`)
+                        const data = await response.json()
+
+                        // If session doesn't exist (404), it will be created when first message is sent via WebSocket
+                        if (!data.success && response.status === 404) {
+                            console.log('Session will be created with first message:', id)
                         }
                     } catch (error) {
-                        console.error('Failed to create chat:', error)
+                        console.error('Error checking session:', error)
+                        // Continue anyway - session will be created with first message
                     }
                 }
 
-                createChatIfNeeded().then(() => {
-                    setMessagesByChat(prev => {
-                        const currentMessages = prev[id] || []
-                        const updatedMessages = [...currentMessages, initialMsg]
-                        // Start streaming with the updated messages
-                        const history = buildOllamaMessagesFrom(updatedMessages)
-                        startAssistantStream(id, history, selectedModel)
-                        return {
-                            ...prev,
-                            [id]: updatedMessages
-                        }
-                    })
-                    setIsProcessing(true)
+                // Start WebSocket streaming with the initial message
+                setMessagesByChat(prev => {
+                    const currentMessages = prev[id] || []
+                    const updatedMessages = [...currentMessages, initialMsg]
+                    return {
+                        ...prev,
+                        [id]: updatedMessages
+                    }
                 })
+                setIsProcessing(true)
+                connectWebSocket(id, initialMsg.content, selectedModel || 'gemini-2.5-flash', false)
             }
             navigate(location.pathname, { replace: true, state: {} })
         }
     }, [id, model])
 
     const handleNewChat = async () => {
-        const newId = `ch_${Date.now()}`
+        // Generate a new UUID for the session (frontend generates, backend will use it)
+        const newSessionId = `550e8400-e29b-41d4-a716-${Date.now().toString(16).padStart(12, '0')}`
+
         try {
-            // Create chat in database
-            await invoke('cmd_create_chat', {
-                id: newId,
-                title: 'New Chat',
-                model: model
-            })
-
-            // Add welcome message to database
-            const welcomeMessage = { id: Date.now(), role: 'assistant', content: 'New chat started. What would you like to do?', createdAt: new Date().toISOString() }
-            await invoke('cmd_add_message', {
-                chatId: newId,
-                role: welcomeMessage.role,
-                content: welcomeMessage.content,
-                files: null
-            })
-
+            // Create empty session in state
             setMessagesByChat((prev) => ({
                 ...prev,
-                [newId]: [welcomeMessage],
+                [newSessionId]: [],
             }))
-            setActiveChatId(newId)
-            navigate(`/chat/${newId}`)
+            setActiveChatId(newSessionId)
+            navigate(`/chat/${newSessionId}`)
         } catch (error) {
             console.error('Failed to create new chat:', error)
-            // Fallback to in-memory only
+            // Fallback
             setMessagesByChat((prev) => ({
                 ...prev,
-                [newId]: [
-                    { id: Date.now(), role: 'assistant', content: 'New chat started. What would you like to do?' },
-                ],
+                [newSessionId]: [],
             }))
-            setActiveChatId(newId)
-            navigate(`/chat/${newId}`)
+            setActiveChatId(newSessionId)
+            navigate(`/chat/${newSessionId}`)
         }
     }
 
     const handleSelectChat = (id) => {
+        console.log('handleSelectChat called with ID:', id)
         setActiveChatId(id)
         navigate(`/chat/${id}`)
+    }
+
+    const handleUpdateTitle = (newTitle) => {
+        // Update the title in the current session state
+        setCurrentSession(prev => prev ? { ...prev, title: newTitle } : null)
+        console.log('Title updated to:', newTitle)
+        // The sidebar will refresh automatically via the API call in ChatHeader
+    }
+
+    const handleRenameChat = async (chatId, newTitle) => {
+        try {
+            const response = await fetch(`http://localhost:8000/api/sessions/${chatId}/title`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ title: newTitle }),
+            })
+            const data = await response.json()
+
+            if (data.success) {
+                // Refresh the chats list
+                loadChatsFromDatabase()
+                // Update current session if it's the active one
+                if (chatId === activeChatId) {
+                    setCurrentSession(prev => prev ? { ...prev, title: newTitle } : null)
+                }
+            } else {
+                console.error('Failed to rename chat:', data.error)
+                alert('Failed to rename chat')
+            }
+        } catch (error) {
+            console.error('Error renaming chat:', error)
+            alert('Error renaming chat')
+        }
+    }
+
+    const handleDeleteChat = async (chatId) => {
+        try {
+            const response = await fetch(`http://localhost:8000/api/sessions/${chatId}`, {
+                method: 'DELETE',
+            })
+            const data = await response.json()
+
+            if (data.success) {
+                // Refresh the chats list
+                loadChatsFromDatabase()
+                // If the deleted chat was active, navigate away
+                if (chatId === activeChatId) {
+                    navigate('/')
+                }
+            } else {
+                console.error('Failed to delete chat:', data.error)
+                alert('Failed to delete chat')
+            }
+        } catch (error) {
+            console.error('Error deleting chat:', error)
+            alert('Error deleting chat')
+        }
     }
 
     const handleSend = async (text, files) => {
         const userMsg = { id: Date.now(), role: 'user', content: text, files, createdAt: new Date().toISOString() }
 
         try {
-            // Save user message to database
-            await invoke('cmd_add_message', {
-                chatId: activeChatId,
+            // Messages are saved automatically via WebSocket API
+            // No need to manually save here as WebSocket handles persistence
+            console.log('Message will be saved via WebSocket:', {
+                sessionId: activeChatId,
                 role: userMsg.role,
                 content: userMsg.content,
                 files: files ? JSON.stringify(files) : null
             })
         } catch (error) {
-            console.error('Failed to save user message:', error)
+            console.error('Failed to prepare message:', error)
         }
 
         setMessagesByChat((prev) => ({
@@ -391,18 +517,23 @@ const Chat = () => {
             [activeChatId]: [...(prev[activeChatId] || []), userMsg],
         }))
         setIsProcessing(true)
-        const history = buildOllamaMessagesFrom([...(messagesByChat[activeChatId] || []), userMsg])
-        startAssistantStream(activeChatId, history, model)
+
+        // Use the selected model from AIInput or current model
+        const modelToUse = location.state?.selectedModel || model || 'gemini-2.5-flash'
+
+        // Connect WebSocket with session_id for continuation
+        connectWebSocket(activeChatId, text, modelToUse, false)
     }
 
-    // Cleanup listeners on unmount
+    // Cleanup WebSocket and listeners on unmount
     useEffect(() => {
         return () => {
+            if (wsRef.current) {
+                wsRef.current.close()
+            }
             if (unlistenRefs.current.stream) { unlistenRefs.current.stream(); unlistenRefs.current.stream = null }
             if (unlistenRefs.current.done) { unlistenRefs.current.done(); unlistenRefs.current.done = null }
-            if (currentTaskId) {
-                invoke('cmd_force_stop', { taskId: currentTaskId }).catch(() => { })
-            }
+            // No task to stop since we're using WebSocket
         }
     }, [])
 
@@ -413,6 +544,8 @@ const Chat = () => {
                     recentChats={recentChats}
                     onNewChat={handleNewChat}
                     onSelectChat={handleSelectChat}
+                    onRenameChat={handleRenameChat}
+                    onDeleteChat={handleDeleteChat}
                     activeChatId={activeChatId}
                 />
 
@@ -420,6 +553,9 @@ const Chat = () => {
                     <ChatHeader
                         onOpenSettings={() => { }}
                         model={model}
+                        chatTitle={currentSession?.title}
+                        sessionId={activeChatId}
+                        onUpdateTitle={handleUpdateTitle}
                         chatInfo={{
                             messageCount: currentMessages.length,
                             createdAt: currentMessages.length > 0 ? currentMessages[0]?.createdAt : new Date().toISOString(),

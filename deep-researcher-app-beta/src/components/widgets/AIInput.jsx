@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import axios from 'axios';
-import { invoke } from '@tauri-apps/api/core';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     Send,
@@ -146,20 +145,27 @@ const AIInput = () => {
 
             const modelsData = response.data.models;
 
+            // Filter models that support text input and output
+            const textModels = modelsData.filter(model => {
+                const inputTypes = model[4] || []
+                const outputTypes = model[5] || []
+                return inputTypes.includes('text') && outputTypes.includes('text')
+            })
+
             // Convert model data to the expected format with descriptions
             // Each model is [display_name, provider, type, model_id]
-            const modelsWithDescriptions = modelsData.map(modelArray => {
+            const modelsWithDescriptions = textModels.map(modelArray => {
                 const [displayName, provider, type, modelId] = modelArray;
                 return {
                     id: modelId.toLowerCase().replace(/[^a-z0-9]/g, '-'),
                     name: displayName,
+                    modelId: modelId, // The actual model code to send to API
                     description: type === 'offline'
                         ? `Local Ollama model | Model by ${provider}`
                         : `Connected to ${provider}`,
                     isActive: true, // All models from API are considered active
                     provider: provider,
-                    type: type, // "cloud" or "offline"
-                    modelId: modelId
+                    type: type // "cloud" or "offline"
                 };
             });
 
@@ -187,7 +193,7 @@ const AIInput = () => {
         }
     };
 
-    // Load the selected model into Ollama (called only when user explicitly requests)
+    // Load the selected model (mock - no longer using Ollama/Tauri)
     const loadSelectedModel = async () => {
         if (!selectedModel || isLoadingModel) return;
 
@@ -196,7 +202,8 @@ const AIInput = () => {
 
         try {
             console.log(`Loading model: ${selectedModel}`);
-            await invoke('cmd_invoke_model', { model: selectedModel });
+            // Mock loading - replace with actual API call if needed
+            await new Promise(resolve => setTimeout(resolve, 1000));
             console.log(`Successfully loaded model: ${selectedModel}`);
         } catch (error) {
             console.error('Failed to load model:', error);
@@ -204,42 +211,6 @@ const AIInput = () => {
         } finally {
             setIsLoadingModel(false);
         }
-    };
-
-    // Check if the selected model is currently loaded/active
-    const checkModelStatus = async () => {
-        try {
-            const activeModels = await invoke('cmd_get_active_models');
-            return activeModels.includes(selectedModel);
-        } catch (error) {
-            console.error('Failed to check model status:', error);
-            return false;
-        }
-    };
-
-    // Fetch and display model metadata in console
-    const fetchModelMetadata = async () => {
-        try {
-            console.log('Fetching model metadata...');
-            await invoke('cmd_get_models_metadata');
-        } catch (error) {
-            console.error('Failed to fetch model metadata:', error);
-        }
-    };
-
-    // Helper function to generate descriptions for model names
-    const getModelDescription = (modelName) => {
-        const name = modelName.toLowerCase();
-        if (name.includes('llama')) return 'Meta Llama series model';
-        if (name.includes('codellama')) return 'Code-focused Llama model';
-        if (name.includes('mistral')) return 'Mistral AI model';
-        if (name.includes('phi')) return 'Microsoft Phi model';
-        if (name.includes('gemma')) return 'Google Gemma model';
-        if (name.includes('qwen')) return 'Alibaba Qwen model';
-        if (name.includes('deepseek')) return 'DeepSeek model';
-        if (name.includes('yi')) return '01.AI Yi model';
-        if (name.includes('vicuna')) return 'LMSYS Vicuna model';
-        return 'Local Ollama model';
     };
 
     // Fallback inline suggestion function for browser/testing
@@ -275,21 +246,18 @@ const AIInput = () => {
 
         setIsLoadingAutocomplete(true);
         try {
-            const suggestions = await invoke('autocomplete_suggestions', {
-                text: text,
-                max_suggestions: 1
-            });
-            if (Array.isArray(suggestions) && suggestions.length > 0) {
-                const suggestion = suggestions[0];
-                // Only show the completion part (after the current text)
-                if (suggestion.toLowerCase().startsWith(text.toLowerCase())) {
-                    setInlineSuggestion(suggestion.slice(text.length));
-                } else {
-                    setInlineSuggestion('');
-                }
-            } else {
-                setInlineSuggestion('');
-            }
+            // Mock autocomplete - replace with actual API call if needed
+            // const suggestions = await fetch('/api/autocomplete', {
+            //     method: 'POST',
+            //     headers: { 'Content-Type': 'application/json' },
+            //     body: JSON.stringify({ text, max_suggestions: 1 })
+            // });
+            // const data = await suggestions.json();
+            // ... handle suggestions
+
+            // For now, use fallback
+            const fallbackSuggestion = getFallbackInlineSuggestion(text);
+            setInlineSuggestion(fallbackSuggestion);
         } catch (error) {
             console.error('Autocomplete error:', error);
             // Fallback autocomplete for browser/testing
@@ -390,10 +358,15 @@ const AIInput = () => {
                 // Pass lightweight file descriptors (names only) to avoid serializing File objects
                 files: attachedFiles.map(f => ({ file: { name: f.file?.name || 'attachment' }, importance: f.importance }))
             };
+
+            // Find the selected model's modelId (actual model code)
+            const selectedModelData = availableModels.find(m => m.name === selectedModel);
+            const modelIdToSend = selectedModelData?.modelId || selectedModel;
+
             navigate(`/chat/${id}`, {
                 state: {
                     initialMsg,
-                    selectedModel,
+                    selectedModel: modelIdToSend, // Send the model code, not the display name
                     selectedAgentType
                 }
             });
@@ -460,15 +433,6 @@ const AIInput = () => {
         { id: 'analyst', name: 'Data Analyst', icon: Lightbulb, description: 'Data analysis and insights' }
     ];
 
-    // Use availableModels if loaded, otherwise fallback to hardcoded models
-    const models = availableModels.length > 0 ? availableModels : [
-        { id: 'gpt-5-preview', name: 'GPT-5 (Preview)', description: 'Early access, subject to change' },
-        { id: 'claude-sonnet', name: 'Claude Sonnet 4', description: 'Most advanced model' },
-        { id: 'claude-haiku', name: 'Claude Haiku', description: 'Fast and efficient' },
-        { id: 'gpt4', name: 'GPT-4', description: 'Creative and analytical' },
-        { id: 'gemini', name: 'Gemini', description: 'Multimodal capabilities' }
-    ];
-
     const fileTypes = [
         { id: 'images', name: 'Images', icon: Image, description: 'PNG, JPG, GIF' },
         { id: 'pdfs', name: 'PDFs', icon: FileText, description: 'PDF files' },
@@ -516,7 +480,7 @@ const AIInput = () => {
                                     Deep Researcher
                                 </h1>
                             </GradientText>
-                            <p className="text-gray-300 text-lg">Advanced Ollama-powered AI research.</p>
+                            <p className="text-gray-300 text-lg">Advanced AI-powered research and analysis.</p>
                         </motion.div>
 
                         {/* Main Input Container */}
@@ -721,13 +685,27 @@ const AIInput = () => {
                                             <DropdownMenuContent className="bg-gray-800 border border-gray-600 rounded-lg shadow-lg z-50 custom-scrollbar" sideOffset={8}>
 
                                                 {isLoadingModels ? (
-                                                    <div className="px-3 py-2 text-gray-400 text-sm flex items-center gap-2">
-                                                        <Loader2 className="w-4 h-4 animate-spin" />
-                                                        Loading models...
+                                                    <div className="px-3 py-2 text-gray-400 text-sm flex items-center justify-between">
+                                                        <div className="flex items-center gap-2">
+                                                            <Loader2 className="w-4 h-4 animate-spin" />
+                                                            Loading models...
+                                                        </div>
+                                                        <button
+                                                            onClick={fetchAvailableModels}
+                                                            className="text-xs px-2 py-1 bg-blue-500/20 text-blue-400 rounded hover:bg-blue-500/30 transition-colors"
+                                                        >
+                                                            Retry
+                                                        </button>
                                                     </div>
                                                 ) : modelsError ? (
-                                                    <div className="px-3 py-2 text-red-400 text-sm">
-                                                        Failed to load models. Using defaults.
+                                                    <div className="px-3 py-2 text-red-400 text-sm flex items-center justify-between">
+                                                        <span>Failed to load models. Using defaults.</span>
+                                                        <button
+                                                            onClick={fetchAvailableModels}
+                                                            className="text-xs px-2 py-1 bg-red-500/20 text-red-400 rounded hover:bg-red-500/30 transition-colors"
+                                                        >
+                                                            Retry
+                                                        </button>
                                                     </div>
                                                 ) : models.length === 0 ? (
                                                     <div className="px-3 py-2 text-gray-400 text-sm">
@@ -806,8 +784,8 @@ const AIInput = () => {
                                                                                             e.stopPropagation();
                                                                                             setSelectedModel(model.name);
                                                                                             await loadSelectedModel();
-                                                                                            // Refresh the model list to show updated status
-                                                                                            await fetchAvailableModels();
+                                                                                            // Update the active models list to reflect the loaded model
+                                                                                            setActiveModels(prev => [...new Set([...prev, model.name])]);
                                                                                         }}
                                                                                         disabled={isLoadingModel}
                                                                                         className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-500 disabled:bg-gray-500 disabled:cursor-not-allowed transition-colors"
