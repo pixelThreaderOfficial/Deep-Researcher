@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import WebSocket
+from fastapi.responses import FileResponse, JSONResponse
 from gemini.models.models import get_model_names, get_available_models
 from gemini.gen.genText import generate_content_stream, generate_content, generate_session_title_async
 from gemini.gen.research_base import research_agent_stream
@@ -9,6 +10,7 @@ import json
 import asyncio
 from pydantic import BaseModel
 from typing import Optional
+from bucket.stores import get_file_by_url_path, log_file_access
 
 app = FastAPI()
 
@@ -34,6 +36,35 @@ class TitleUpdate(BaseModel):
 @app.get("/")
 def read_root():
     return {"Hello": "World"}
+
+
+# ==============================
+# File serving endpoint
+# ==============================
+@app.get("/files/{file_type}/{filename}")
+def serve_file(file_type: str, filename: str, user_agent: Optional[str] = None):
+    """Serve stored files from bucket using DB metadata.
+
+    - file_type: one of 'uploads', 'downloads', 'generated'
+    - filename: the exact stored filename (e.g., generated_images_YYYYMMDD_HHMMSS_uuid.jpg)
+    """
+    try:
+        # Compose path portion to look up
+        url_path = f"{file_type}/{filename}"
+        file_data = get_file_by_url_path(url_path)
+        if not file_data:
+            return JSONResponse({"success": False, "error": "File not found"}, status_code=404)
+
+        # Log access
+        log_file_access(
+            file_data["file_id"],
+            "serve",
+            user_agent=user_agent,
+        )
+
+        return FileResponse(file_data["file_path"], media_type=file_data.get("mime_type") or "application/octet-stream")
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 @app.get("/models")
 def get_models():

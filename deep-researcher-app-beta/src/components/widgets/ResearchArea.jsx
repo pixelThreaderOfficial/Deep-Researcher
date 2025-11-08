@@ -1,13 +1,11 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Mic, MicOff, Paperclip, Send, Loader2, Copy, Volume2, RefreshCw, Sparkles, ChevronDown, ExternalLink, Clock, FileText as FileTextIcon, Image as ImageIcon, Newspaper, BarChart3, Link, Search, Zap, Brain, Globe, Database, CheckCircle, AlertCircle, Play, Pause, Square } from 'lucide-react'
+import { Mic, MicOff, Paperclip, Send, Loader2, Copy, Volume2, RefreshCw, Sparkles, Image as ImageIcon, CheckCircle, AlertCircle } from 'lucide-react'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../ui/dropdown-menu'
-import { FileText, Image, File } from 'lucide-react'
-import { Badge } from '../ui/badge'
+import { FileText, File } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import StreamingMessageView from './StreamingMessageView'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import ThinkingMarkdown from './ThinkingMarkdown'
 import '../../md.css'
 
 const ResearchArea = ({
@@ -36,6 +34,12 @@ const ResearchArea = ({
     const lastUserAlignedRef = useRef(null)
     const prevMessagesCountRef = useRef(0)
     const pendingAlignUserToTopRef = useRef(false)
+
+    // Floating research status panel state
+    const [showResearchPanel, setShowResearchPanel] = useState(false)
+    const [panelState, setPanelState] = useState('idle') // 'idle' | 'in-progress' | 'completed' | 'stopped'
+    const prevIsProcessingRef = useRef(false)
+    const panelTimerRef = useRef(null)
 
     const fileTypes = [
         { id: 'images', name: 'Images', icon: ImageIcon, description: 'PNG, JPG, GIF' },
@@ -79,6 +83,46 @@ const ResearchArea = ({
             return () => clearTimeout(timer)
         }
     }, [initialInput, isProcessing])
+
+    // Manage floating research panel visibility and state
+    useEffect(() => {
+        // Clear any existing hide timers
+        if (panelTimerRef.current) {
+            clearTimeout(panelTimerRef.current)
+            panelTimerRef.current = null
+        }
+
+        const wasProcessing = prevIsProcessingRef.current
+
+        if (isProcessing) {
+            setPanelState('in-progress')
+            setShowResearchPanel(true)
+        } else {
+            if (researchMetadata) {
+                // Completed successfully
+                setPanelState('completed')
+                setShowResearchPanel(true)
+                panelTimerRef.current = setTimeout(() => setShowResearchPanel(false), 1800)
+            } else if (wasProcessing) {
+                // Terminated unexpectedly
+                setPanelState('stopped')
+                setShowResearchPanel(true)
+                panelTimerRef.current = setTimeout(() => setShowResearchPanel(false), 1800)
+            } else {
+                setShowResearchPanel(false)
+                setPanelState('idle')
+            }
+        }
+
+        prevIsProcessingRef.current = isProcessing
+
+        return () => {
+            if (panelTimerRef.current) {
+                clearTimeout(panelTimerRef.current)
+                panelTimerRef.current = null
+            }
+        }
+    }, [isProcessing, researchMetadata])
 
     const triggerFileInput = (type) => {
         if (fileInputRef.current) {
@@ -184,111 +228,56 @@ const ResearchArea = ({
         return stableView.map(m => m.id || `${m.role}-${m.createdAt}`).join(',')
     }, [stableView])
 
-    // Render message content with proper formatting
-    const renderMessageContent = (content, isUser = false) => {
-        if (!content) return null
-
-        return (
-            <div className={`prose prose-sm max-w-none ${isUser ? 'prose-invert' : ''}`}>
-                {isUser ? (
-                    <div className="whitespace-pre-wrap break-words">{content}</div>
-                ) : (
-                    <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        className="prose prose-invert prose-sm max-w-none"
-                        components={{
-                            p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
-                            h1: ({ children }) => <h1 className="text-xl font-bold mb-3 mt-4 first:mt-0">{children}</h1>,
-                            h2: ({ children }) => <h2 className="text-lg font-bold mb-2 mt-3 first:mt-0">{children}</h2>,
-                            h3: ({ children }) => <h3 className="text-base font-bold mb-2 mt-3 first:mt-0">{children}</h3>,
-                            ul: ({ children }) => <ul className="list-disc list-inside mb-2 space-y-1">{children}</ul>,
-                            ol: ({ children }) => <ol className="list-decimal list-inside mb-2 space-y-1">{children}</ol>,
-                            li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-                            code: ({ inline, children }) => inline ?
-                                <code className="bg-gray-700 px-1 py-0.5 rounded text-xs font-mono">{children}</code> :
-                                <code className="block bg-gray-700 p-3 rounded-md text-sm font-mono overflow-x-auto">{children}</code>,
-                            blockquote: ({ children }) => <blockquote className="border-l-4 border-gray-500 pl-4 italic my-2">{children}</blockquote>,
-                            a: ({ href, children }) => <a href={href} className="text-blue-400 hover:text-blue-300 underline" target="_blank" rel="noopener noreferrer">{children}</a>,
-                            strong: ({ children }) => <strong className="font-bold">{children}</strong>,
-                            em: ({ children }) => <em className="italic">{children}</em>,
-                        }}
-                    >
-                        {content}
-                    </ReactMarkdown>
-                )}
-            </div>
-        )
-    }
-
-    // Get importance color
-    const getImportanceColor = (importance) => {
-        switch (importance) {
-            case 'high': return 'text-red-400 bg-red-400/20'
-            case 'medium': return 'text-yellow-400 bg-yellow-400/20'
-            case 'low': return 'text-green-400 bg-green-400/20'
-            default: return 'text-gray-400 bg-gray-400/20'
+    // Determine the last non-streaming assistant message to attach images to
+    const lastAssistantId = useMemo(() => {
+        const arr = Array.isArray(stableView) ? stableView : []
+        for (let i = arr.length - 1; i >= 0; i--) {
+            const m = arr[i]
+            if (m && m.role === 'assistant' && m.streaming !== true) return m.id
         }
-    }
+        return null
+    }, [stableView])
 
     return (
         <div className="flex-1 min-h-0 flex flex-col relative">
-            {/* Floating Research Summary - Right Side */}
-            {(isProcessing || researchProgress || researchMetadata) && (
-                <div className="fixed right-4 top-1/2 transform -translate-y-1/2 z-50">
-                    <Card className="bg-gray-800/95 border-gray-700 shadow-2xl backdrop-blur-sm">
-                        <CardContent className="p-4 min-w-[200px]">
-                            <div className="text-center space-y-3">
-                                {/* Header - Show progress or completion */}
-                                {researchMetadata ? (
-                                    <div className="flex items-center justify-center gap-2 text-green-400">
-                                        <CheckCircle className="w-4 h-4" />
-                                        <span className="text-sm font-medium">Research completed!</span>
-                                    </div>
-                                ) : (
-                                    <div className="flex items-center justify-center gap-2 text-blue-400">
-                                        <Loader2 className="w-4 h-4 animate-spin" />
-                                        <span className="text-sm font-medium">Research in progress...</span>
-                                    </div>
-                                )}
-
-                                {/* Title */}
-                                <h4 className="text-gray-200 text-sm font-medium">Research Summary</h4>
-
-                                {/* Progress or Stats */}
-                                {researchMetadata ? (
-                                    <div className="grid grid-cols-2 gap-2 text-center">
-                                        <div className="bg-gray-700/50 rounded p-2">
-                                            <div className="text-lg font-bold text-blue-400">{researchMetadata.sources_count || 0}</div>
-                                            <div className="text-xs text-gray-400">Sources</div>
+            {/* Floating research status (bottom-center above composer) */}
+            <AnimatePresence>
+                {showResearchPanel && (
+                    <motion.div
+                        key="research-status"
+                        initial={{ opacity: 0, y: 16 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 16 }}
+                        transition={{ type: 'spring', stiffness: 260, damping: 22 }}
+                        className="fixed left-1/2 -translate-x-1/2 bottom-24 md:bottom-28 z-40 w-full px-4 pointer-events-none"
+                    >
+                        <div className="max-w-[900px] mx-auto flex justify-center">
+                            <Card className="bg-gray-900/90 border border-gray-700 shadow-xl pointer-events-auto">
+                                <CardContent className="px-4 py-3">
+                                    {panelState === 'in-progress' && (
+                                        <div className="flex items-center gap-2 text-blue-300">
+                                            <Loader2 className="w-4 h-4 animate-spin" />
+                                            <span className="text-sm font-medium">{researchProgress || 'Researching…'}</span>
                                         </div>
-                                        <div className="bg-gray-700/50 rounded p-2">
-                                            <div className="text-lg font-bold text-green-400">{researchMetadata.images_count || 0}</div>
-                                            <div className="text-xs text-gray-400">Images</div>
+                                    )}
+                                    {panelState === 'completed' && (
+                                        <div className="flex items-center gap-2 text-green-300">
+                                            <CheckCircle className="w-4 h-4" />
+                                            <span className="text-sm font-medium">Research completed</span>
                                         </div>
-                                        <div className="bg-gray-700/50 rounded p-2">
-                                            <div className="text-lg font-bold text-purple-400">{researchMetadata.news_count || 0}</div>
-                                            <div className="text-xs text-gray-400">News</div>
+                                    )}
+                                    {panelState === 'stopped' && (
+                                        <div className="flex items-center gap-2 text-orange-300">
+                                            <AlertCircle className="w-4 h-4" />
+                                            <span className="text-sm font-medium">Research stopped</span>
                                         </div>
-                                        <div className="bg-gray-700/50 rounded p-2">
-                                            <div className="text-lg font-bold text-orange-400">{researchMetadata.research_time ? researchMetadata.research_time.toFixed(1) : '0.0'}</div>
-                                            <div className="text-xs text-gray-400">Seconds</div>
-                                        </div>
-                                    </div>
-                                ) : (
-                                    <div className="text-center">
-                                        <div className="text-gray-300 text-sm mb-2">
-                                            {researchProgress || 'Initializing...'}
-                                        </div>
-                                        <div className="w-full bg-gray-700 rounded-full h-2">
-                                            <div className="bg-blue-500 h-2 rounded-full animate-pulse" style={{ width: '60%' }}></div>
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        </CardContent>
-                    </Card>
-                </div>
-            )}
+                                    )}
+                                </CardContent>
+                            </Card>
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
 
             {/* Messages */}
             <div
@@ -297,131 +286,140 @@ const ResearchArea = ({
             >
                 {/* Centered container for all messages */}
                 <div className="w-full max-w-[900px] mx-auto px-4 space-y-6">
-                    {stableView.map((message, index) => (
-                        <motion.div
-                            key={message.id || `msg-${index}`}
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ duration: 0.3, delay: index * 0.05 }}
-                            className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                    {stableView?.map((m, index) => (
+                        <div
+                            key={m.id}
+                            ref={(el) => {
+                                if (el) messageRefs.current.set(m.id, el)
+                                else messageRefs.current.delete(m.id)
+                            }}
+                            className={`flex ${m.role === 'assistant' ? 'justify-start' : 'justify-end'} ${index > 0 ? 'mt-6' : ''}`}
                         >
-                            <div className={`max-w-full ${message.role === 'user' ? 'order-2' : 'order-1'}`}>
-                                {/* Message Header */}
-                                <div className={`flex items-center gap-2 mb-2 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                                    <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium ${message.role === 'user'
-                                        ? 'bg-blue-500/20 text-blue-300'
-                                        : ' text-purple-300'
-                                        }`}>
-                                        {message.role === 'user' ? (
-                                            <>
-                                                <Brain className="w-3 h-3" />
-                                                You
-                                            </>
-                                        ) : (
-                                            <>
-                                                <Search className="w-3 h-3" />
-                                                Deep Researcher
-                                            </>
+                            {m.role === 'user' ? (
+                                <div className="max-w-[85%]">
+                                    <div className="rounded-2xl px-4 py-2 bg-gray-800/70 border border-gray-700 text-gray-100 break-all">
+                                        {m.content}
+                                        {Array.isArray(m.files) && m.files.length > 0 && (
+                                            <div className="mt-2 flex flex-wrap gap-2">
+                                                {m.files.map((f, idx) => (
+                                                    <div key={idx} className="flex items-center gap-2 bg-gray-700/60 border border-gray-600 rounded-lg px-2 py-1 text-xs text-gray-200">
+                                                        <File className="w-3.5 h-3.5 text-blue-400" />
+                                                        <span className="truncate max-w-40">{f.file?.name || 'attachment'}</span>
+                                                        {f.importance && (
+                                                            <span className={`px-1.5 py-0.5 rounded ${f.importance === 'high'
+                                                                ? 'bg-red-500/30 text-red-300'
+                                                                : f.importance === 'medium'
+                                                                    ? 'bg-yellow-500/30 text-yellow-300'
+                                                                    : 'bg-blue-500/30 text-blue-300'
+                                                                }`}>
+                                                                {f.importance}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                ))}
+                                            </div>
                                         )}
                                     </div>
-                                    {message.createdAt && (
-                                        <span className="text-xs text-gray-500">
-                                            {new Date(message.createdAt).toLocaleTimeString()}
-                                        </span>
-                                    )}
-                                </div>
-
-                                {/* Message Content */}
-                                <div className={`rounded-2xl px-4 py-3 shadow-lg ${message.role === 'user'
-                                    ? 'bg-blue-600 text-white'
-                                    : 'bg-gray-800 border border-gray-700 text-gray-100'
-                                    }`}>
-                                    {renderMessageContent(message.content, message.role === 'user')}
-
-                                    {/* Attachments */}
-                                    {message.files && message.files.length > 0 && (
-                                        <div className="mt-3 space-y-2">
-                                            {message.files.map((file, fileIndex) => (
-                                                <div key={fileIndex} className={`flex items-center gap-2 p-2 rounded-lg ${message.role === 'user' ? 'bg-blue-500/20' : 'bg-gray-700/50'
-                                                    }`}>
-                                                    <FileText className="w-4 h-4" />
-                                                    <span className="text-sm truncate">
-                                                        {file.file?.name || 'attachment'}
-                                                    </span>
-                                                    <Badge className={`text-xs ${getImportanceColor(file.importance)}`}>
-                                                        {file.importance}
-                                                    </Badge>
-                                                </div>
-                                            ))}
+                                    {m.createdAt && (
+                                        <div className="mt-1 text-[10px] text-gray-500 text-right">
+                                            {new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                         </div>
                                     )}
                                 </div>
-                            </div>
-                        </motion.div>
+                            ) : (
+                                <div className="w-full text-gray-100 leading-relaxed break-words">
+                                    {/* Embedded images at top for the latest assistant message */}
+                                    {m.id === lastAssistantId && Array.isArray(researchImages) && researchImages.length > 0 && (
+                                        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }} className="mb-3">
+                                            <div className="-mx-1 overflow-x-auto no-scrollbar">
+                                                <div className="px-1 flex gap-3 snap-x snap-mandatory">
+                                                    {researchImages.map((img, idx) => (
+                                                        <div key={idx} className="flex-shrink-0 snap-start">
+                                                            <img
+                                                                src={img.file_url || img.url}
+                                                                alt={img.title || 'Research image'}
+                                                                className="w-[260px] h-40 object-cover rounded-xl border border-gray-700"
+                                                                loading="lazy"
+                                                            />
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        </motion.div>
+                                    )}
+                                    {m.streaming ? (
+                                        <StreamingMessageView text={m.content || ''} />
+                                    ) : (
+                                        <div className="md max-w-none">
+                                            <ThinkingMarkdown>
+                                                {m.content || ''}
+                                            </ThinkingMarkdown>
+                                        </div>
+                                    )}
+                                    {/* Assistant actions */}
+                                    <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                                        <button
+                                            onClick={() => navigator.clipboard?.writeText(m.content || '')}
+                                            className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-gray-700 bg-gray-800/60 hover:bg-gray-700 text-gray-200"
+                                            title="Copy"
+                                        >
+                                            <Copy className="w-3.5 h-3.5" />
+                                        </button>
+                                        <button
+                                            onClick={() => {
+                                                try {
+                                                    const u = new SpeechSynthesisUtterance(m.content || '')
+                                                    window.speechSynthesis?.speak(u)
+                                                } catch { }
+                                            }}
+                                            className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-gray-700 bg-gray-800/60 hover:bg-gray-700 text-gray-200"
+                                            title="Read aloud"
+                                        >
+                                            <Volume2 className="w-3.5 h-3.5" />
+                                        </button>
+                                        <button
+                                            onClick={() => console.log('regenerate requested for message', m.id)}
+                                            className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-gray-700 bg-gray-800/60 hover:bg-gray-700 text-gray-200"
+                                            title="Regenerate"
+                                        >
+                                            <RefreshCw className="w-3.5 h-3.5" />
+                                        </button>
+                                        <button
+                                            onClick={() => console.log('retouch requested for message', m.id)}
+                                            className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-gray-700 bg-gray-800/60 hover:bg-gray-700 text-gray-200"
+                                            title="Retouch"
+                                        >
+                                            <Sparkles className="w-3.5 h-3.5" />
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
                     ))}
 
                     {/* Streaming Assistant Message */}
                     {streamingIdx >= 0 && messages[streamingIdx]?.role === 'assistant' && messages[streamingIdx]?.streaming === true && (
                         <div
                             key={messages[streamingIdx].id}
-                            className="flex justify-start"
+                            className="flex justify-start mt-6"
                             ref={(el) => {
+                                if (!el) return
                                 const elContainer = messagesContainerRef.current
                                 if (!elContainer) return
                                 if (lastUserAlignedRef.current) {
-                                    // Calculate if this streaming message should align user message to top
-                                    const containerRect = elContainer.getBoundingClientRect()
-                                    const messageRect = el.getBoundingClientRect()
-                                    const isVisible = messageRect.top >= containerRect.top && messageRect.bottom <= containerRect.bottom
-
-                                    if (!isVisible && messages.length > 1) {
-                                        const lastUser = [...messages].reverse().find(m => m && m.role === 'user')
-                                        if (lastUser && lastUser.id !== lastAlignedStreamIdRef.current) {
-                                            lastAlignedStreamIdRef.current = lastUser.id
-                                            // Align user message to top
-                                            const userIndex = messages.findIndex(m => m.id === lastUser.id)
-                                            if (userIndex >= 0) {
-                                                const userElement = messageRefs.current.get(lastUser.id)
-                                                if (userElement) {
-                                                    userElement.scrollIntoView({ behavior: 'smooth', block: 'start' })
-                                                    lastUserAlignedRef.current = userElement
-                                                    pendingAlignUserToTopRef.current = true
-                                                    setTimeout(() => {
-                                                        pendingAlignUserToTopRef.current = false
-                                                    }, 500)
-                                                }
-                                            }
-                                        }
-                                    }
+                                    // Do not auto-pin while we keep gap, user can still scroll manually
+                                    setIsPinnedToBottom(false)
                                 }
                             }}
                         >
-                            <div className="max-w-full">
-                                {/* Streaming Message Header */}
-                                <div className={`flex items-center gap-2 mb-2 ${'justify-start'}`}>
-                                    <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium bg-purple-500/20 text-purple-300`}>
-                                        <Search className="w-3 h-3" />
-                                        Deep Researcher
-                                        <Loader2 className="w-3 h-3 animate-spin" />
-                                    </div>
-                                    {messages[streamingIdx].createdAt && (
-                                        <span className="text-xs text-gray-500">
-                                            {new Date(messages[streamingIdx].createdAt).toLocaleTimeString()}
-                                        </span>
-                                    )}
-                                </div>
-
-                                {/* Streaming Content - Same as ChatArea */}
-                                <div className={`rounded-2xl px-4 py-3 shadow-lg text-gray-100`}>
-                                    <div className="w-full text-gray-100 leading-relaxed break-words">
-                                        <StreamingMessageView text={messages[streamingIdx].content || ''} />
-                                    </div>
-                                </div>
+                            <div className="w-full text-gray-100 leading-relaxed break-words">
+                                <StreamingMessageView text={messages[streamingIdx].content || ''} />
                             </div>
                         </div>
                     )}
                 </div>
             </div>
+
             {/* Composer */}
             <div className="p-3">
                 <motion.div
