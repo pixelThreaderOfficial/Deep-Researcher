@@ -1,9 +1,9 @@
 import React, { useState } from 'react'
-import { Bot, Settings, Info, MessageSquare, Clock, Cpu, FileText, Hash, Database, Zap, TrendingUp, Edit3, Check, X } from 'lucide-react'
+import { Bot, Settings, Info, MessageSquare, Clock, Cpu, FileText, Hash, Database, Zap, TrendingUp, Edit3, Check, X, Search } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import ThisChatSettings from './ThisChatSettings'
 
-const ChatHeader = ({ onOpenSettings, model, chatInfo, chatTitle, onUpdateTitle, sessionId }) => {
+const ChatHeader = ({ onOpenSettings, model, chatInfo, chatTitle, onUpdateTitle, sessionId, isResearchMode = false }) => {
     const [isInfoOpen, setIsInfoOpen] = useState(false)
     const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false)
     const [isEditingTitle, setIsEditingTitle] = useState(false)
@@ -33,7 +33,7 @@ const ChatHeader = ({ onOpenSettings, model, chatInfo, chatTitle, onUpdateTitle,
     }
 
     const handleStartEditingTitle = () => {
-        setEditingTitle(chatTitle || 'New Chat')
+        setEditingTitle(chatTitle || (isResearchMode ? 'New Research' : 'New Chat'))
         setIsEditingTitle(true)
     }
 
@@ -73,7 +73,11 @@ const ChatHeader = ({ onOpenSettings, model, chatInfo, chatTitle, onUpdateTitle,
             <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3 text-gray-100">
                     <div className="p-2 rounded-lg bg-gray-800 border border-gray-700">
-                        <Bot className="w-5 h-5 text-blue-400" />
+                        {isResearchMode ? (
+                            <Search className="w-5 h-5 text-purple-400" />
+                        ) : (
+                            <Bot className="w-5 h-5 text-blue-400" />
+                        )}
                     </div>
                     <div className="flex-1 min-w-0">
                         {isEditingTitle ? (
@@ -105,7 +109,7 @@ const ChatHeader = ({ onOpenSettings, model, chatInfo, chatTitle, onUpdateTitle,
                             </div>
                         ) : (
                             <div className="flex items-center gap-2 cursor-pointer group" onClick={handleStartEditingTitle}>
-                                <div className="font-semibold truncate">{chatTitle || 'New Chat'}</div>
+                                <div className="font-semibold truncate">{chatTitle || (isResearchMode ? 'New Research' : 'New Chat')}</div>
                                 <Edit3 className="w-4 h-4 text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity" />
                             </div>
                         )}

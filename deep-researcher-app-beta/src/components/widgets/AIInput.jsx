@@ -19,7 +19,8 @@ import {
     Loader2,
     Plus,
     Settings,
-    ArrowDown
+    ArrowDown,
+    Search
 } from 'lucide-react';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../ui/dropdown-menu';
 import Aurora from '../bits/Aurora/Aurora';
@@ -44,6 +45,7 @@ const AIInput = () => {
     const [characterCount, setCharacterCount] = useState(0);
     const [isFileDropdownOpen, setIsFileDropdownOpen] = useState(false);
     const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
+    const [isResearchMode, setIsResearchMode] = useState(false);
 
     // Inline autocomplete state
     const [inlineSuggestion, setInlineSuggestion] = useState('');
@@ -367,7 +369,8 @@ const AIInput = () => {
                 state: {
                     initialMsg,
                     selectedModel: modelIdToSend, // Send the model code, not the display name
-                    selectedAgentType
+                    selectedAgentType,
+                    isResearchMode
                 }
             });
         } else {
@@ -649,6 +652,20 @@ const AIInput = () => {
                                                 <Settings className="w-5 h-5" />
                                             </motion.button>
                                         </AIInputSettingModal>
+
+                                        {/* Research Mode Toggle */}
+                                        <motion.button
+                                            whileHover={{ scale: 1.05 }}
+                                            whileTap={{ scale: 0.95 }}
+                                            onClick={() => setIsResearchMode(!isResearchMode)}
+                                            className={`p-2 rounded-lg transition-all duration-200 cursor-pointer focus:outline-none focus:ring-0 ${isResearchMode
+                                                ? 'text-blue-400 bg-blue-500/20 border border-blue-500/40'
+                                                : 'text-gray-400 hover:text-gray-200 hover:bg-gray-600 border border-transparent'
+                                                }`}
+                                            title={isResearchMode ? 'Disable Research Mode' : 'Enable Research Mode'}
+                                        >
+                                            <Search className="w-5 h-5" />
+                                        </motion.button>
                                     </div>
 
                                     {/* Right Controls */}
@@ -707,19 +724,19 @@ const AIInput = () => {
                                                             Retry
                                                         </button>
                                                     </div>
-                                                ) : models.length === 0 ? (
+                                                ) : availableModels.length === 0 ? (
                                                     <div className="px-3 py-2 text-gray-400 text-sm">
                                                         No models available
                                                     </div>
                                                 ) : (
                                                     <>
                                                         {/* Cloud Providers Section */}
-                                                        {models.filter(model => model.type === 'cloud').length > 0 && (
+                                                        {availableModels.filter(model => model.type === 'cloud').length > 0 && (
                                                             <>
                                                                 <div className="px-3 py-2 text-xs font-semibold text-gray-300 bg-gray-700/50 border-b border-gray-600">
                                                                     Cloud Providers
                                                                 </div>
-                                                                {models.filter(model => model.type === 'cloud').map((model) => (
+                                                                {availableModels.filter(model => model.type === 'cloud').map((model) => (
                                                                     <div key={model.id} className="px-3 py-2 border-b border-gray-700 last:border-b-0">
                                                                         <div className="flex items-center justify-between">
                                                                             <div className="flex-1">
@@ -749,12 +766,12 @@ const AIInput = () => {
                                                         )}
 
                                                         {/* Offline Models Section */}
-                                                        {models.filter(model => model.type === 'offline').length > 0 && (
+                                                        {availableModels.filter(model => model.type === 'offline').length > 0 && (
                                                             <>
                                                                 <div className="px-3 py-2 text-xs font-semibold text-gray-300 bg-gray-700/50 border-b border-gray-600 border-t">
                                                                     Offline Models
                                                                 </div>
-                                                                {models.filter(model => model.type === 'offline').map((model) => (
+                                                                {availableModels.filter(model => model.type === 'offline').map((model) => (
                                                                     <div key={model.id} className="px-3 py-2 border-b border-gray-700 last:border-b-0">
                                                                         <div className="flex items-center justify-between">
                                                                             <div className="flex-1">

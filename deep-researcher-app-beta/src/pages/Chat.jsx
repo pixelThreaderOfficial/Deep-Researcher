@@ -3,6 +3,7 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import ChatSidebar from '../components/widgets/ChatSidebar'
 import ChatHeader from '../components/widgets/ChatHeader'
 import ChatArea from '../components/widgets/ChatArea'
+import ResearchArea from '../components/widgets/ResearchArea'
 
 const Chat = () => {
     const { id } = useParams()
@@ -16,6 +17,12 @@ const Chat = () => {
     const [currentTaskId, setCurrentTaskId] = useState(null)
     const [currentSession, setCurrentSession] = useState(null)
     const [isLoadingChat, setIsLoadingChat] = useState(false)
+    const [isResearchMode, setIsResearchMode] = useState(false)
+    const [researchProgress, setResearchProgress] = useState('')
+    const [researchSources, setResearchSources] = useState([])
+    const [researchImages, setResearchImages] = useState([])
+    const [researchNews, setResearchNews] = useState(null)
+    const [researchMetadata, setResearchMetadata] = useState(null)
     const unlistenRefs = useRef({ stream: null, done: null })
     const wsRef = useRef(null)
     const currentStreamingMessageIdRef = useRef(null)
@@ -232,7 +239,146 @@ const Chat = () => {
         }
     }, [currentMessages])
 
-    // WebSocket connection for streaming responses
+    // Research WebSocket connection
+    const connectResearchWebSocket = (sessionId, query, model = 'gemini-2.0-flash') => {
+        if (wsRef.current) {
+            wsRef.current.close()
+        }
+
+        // Reset research state
+        setResearchProgress('')
+        setResearchSources([])
+        setResearchImages([])
+        setResearchNews(null)
+        setResearchMetadata(null)
+
+        const ws = new WebSocket('ws://localhost:8000/ws/research')
+        wsRef.current = ws
+
+        ws.onopen = () => {
+            console.log('Research WebSocket connected')
+            ws.send(JSON.stringify({
+                query: query,
+                model: model,
+                session_id: sessionId,
+            }))
+        }
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data)
+
+            switch (data.type) {
+                case 'progress':
+                    console.log(`[${data.stage}] ${data.message}`)
+                    setResearchProgress(`${data.stage}: ${data.message}`)
+                    break
+
+                case 'answer_chunk':
+                    // Append streaming text
+                    setMessagesByChat(prev => {
+                        const newMessages = [...(prev[sessionId] || [])]
+                        const lastMessage = newMessages[newMessages.length - 1]
+
+                        if (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming) {
+                            // Update existing streaming message
+                            lastMessage.content += data.chunk
+                        } else {
+                            // Create new streaming message
+                            const streamingMessage = {
+                                id: Date.now(),
+                                role: 'assistant',
+                                content: data.chunk,
+                                streaming: true,
+                                createdAt: new Date().toISOString()
+                            }
+                            newMessages.push(streamingMessage)
+                            currentStreamingMessageIdRef.current = streamingMessage.id
+                        }
+
+                        return {
+                            ...prev,
+                            [sessionId]: newMessages
+                        }
+                    })
+                    break
+
+                case 'result':
+                    // Final result received
+                    console.log('Research complete!', data.data)
+
+                    // Mark streaming as completed
+                    setMessagesByChat(prev => {
+                        const newMessages = [...(prev[sessionId] || [])]
+                        const lastMessage = newMessages[newMessages.length - 1]
+
+                        if (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming) {
+                            lastMessage.streaming = false
+                        }
+
+                        return {
+                            ...prev,
+                            [sessionId]: [...newMessages]
+                        }
+                    })
+
+                    // Store research data
+                    setResearchSources(data.data.sources || [])
+                    setResearchImages(data.data.images || [])
+                    setResearchNews(data.data.news || null)
+                    setResearchMetadata(data.data.metadata || null)
+
+                    setIsProcessing(false)
+                    setResearchProgress('Research completed!')
+                    ws.close()
+                    wsRef.current = null
+                    break
+
+                case 'error':
+                    console.error('Research error:', data.message)
+                    setMessagesByChat(prev => ({
+                        ...prev,
+                        [sessionId]: [...(prev[sessionId] || []), {
+                            id: Date.now(),
+                            role: 'assistant',
+                            content: `Research failed: ${data.message}`,
+                            createdAt: new Date().toISOString()
+                        }]
+                    }))
+                    setIsProcessing(false)
+                    setResearchProgress(`Error: ${data.message}`)
+                    ws.close()
+                    wsRef.current = null
+                    break
+
+                default:
+                    console.warn('Unknown research message type:', data.type)
+            }
+        }
+
+        ws.onerror = (error) => {
+            console.error('Research WebSocket error:', error)
+            setMessagesByChat(prev => ({
+                ...prev,
+                [sessionId]: [...(prev[sessionId] || []), {
+                    id: Date.now(),
+                    role: 'assistant',
+                    content: 'Connection error occurred during research.',
+                    createdAt: new Date().toISOString()
+                }]
+            }))
+            setIsProcessing(false)
+            setResearchProgress('Connection error')
+        }
+
+        ws.onclose = () => {
+            console.log('Research WebSocket closed')
+            wsRef.current = null
+        }
+
+        return ws
+    }
+
+    // Regular chat WebSocket connection
     const connectWebSocket = (sessionId, prompt, model = 'gemini-2.5-flash', thinking = false) => {
         if (wsRef.current) {
             wsRef.current.close()
@@ -340,7 +486,6 @@ const Chat = () => {
         return ws
     }
 
-
     // Load chat when component mounts or chat ID changes
     useEffect(() => {
         console.log('Chat useEffect triggered:', { id, activeChatId, isLoadingChat })
@@ -363,10 +508,16 @@ const Chat = () => {
         const state = location.state || {}
         const initialMsg = state && state.initialMsg
         const selectedModel = state.selectedModel
+        const researchMode = state.isResearchMode
 
         // Set the model if provided in state
         if (selectedModel && selectedModel !== model) {
             setModel(selectedModel)
+        }
+
+        // Set research mode if provided in state
+        if (researchMode !== undefined) {
+            setIsResearchMode(researchMode)
         }
 
         if (initialMsg && id) {
@@ -401,7 +552,13 @@ const Chat = () => {
                     }
                 })
                 setIsProcessing(true)
-                connectWebSocket(id, initialMsg.content, selectedModel || 'gemini-2.5-flash', false)
+
+                // Use research WebSocket if in research mode
+                if (researchMode) {
+                    connectResearchWebSocket(id, initialMsg.content, selectedModel || 'gemini-2.0-flash')
+                } else {
+                    connectWebSocket(id, initialMsg.content, selectedModel || 'gemini-2.5-flash', false)
+                }
             }
             navigate(location.pathname, { replace: true, state: {} })
         }
@@ -521,8 +678,13 @@ const Chat = () => {
         // Use the selected model from AIInput or current model
         const modelToUse = location.state?.selectedModel || model || 'gemini-2.5-flash'
 
-        // Connect WebSocket with session_id for continuation
-        connectWebSocket(activeChatId, text, modelToUse, false)
+        // Use research WebSocket if in research mode
+        if (isResearchMode) {
+            connectResearchWebSocket(activeChatId, text, modelToUse)
+        } else {
+            // Connect WebSocket with session_id for continuation
+            connectWebSocket(activeChatId, text, modelToUse, false)
+        }
     }
 
     // Cleanup WebSocket and listeners on unmount
@@ -549,13 +711,14 @@ const Chat = () => {
                     activeChatId={activeChatId}
                 />
 
-                <main className="flex-1 h-full flex flex-col min-h-0">
+                <main className="flex-1 flex flex-col min-h-0">
                     <ChatHeader
                         onOpenSettings={() => { }}
                         model={model}
                         chatTitle={currentSession?.title}
                         sessionId={activeChatId}
                         onUpdateTitle={handleUpdateTitle}
+                        isResearchMode={isResearchMode}
                         chatInfo={{
                             messageCount: currentMessages.length,
                             createdAt: currentMessages.length > 0 ? currentMessages[0]?.createdAt : new Date().toISOString(),
@@ -566,11 +729,24 @@ const Chat = () => {
                             lastResponseStats: chatStats.lastResponseStats
                         }}
                     />
-                    <ChatArea
-                        messages={currentMessages}
-                        onSend={handleSend}
-                        isProcessing={isProcessing}
-                    />
+                    {isResearchMode ? (
+                        <ResearchArea
+                            messages={currentMessages}
+                            onSend={handleSend}
+                            isProcessing={isProcessing}
+                            researchProgress={researchProgress}
+                            researchSources={researchSources}
+                            researchImages={researchImages}
+                            researchNews={researchNews}
+                            researchMetadata={researchMetadata}
+                        />
+                    ) : (
+                        <ChatArea
+                            messages={currentMessages}
+                            onSend={handleSend}
+                            isProcessing={isProcessing}
+                        />
+                    )}
                 </main>
             </div>
         </div>
@@ -578,5 +754,3 @@ const Chat = () => {
 }
 
 export default Chat
-
-

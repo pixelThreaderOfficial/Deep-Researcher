@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi import WebSocket
 from gemini.models.models import get_model_names, get_available_models
 from gemini.gen.genText import generate_content_stream, generate_content, generate_session_title_async
+from gemini.gen.research_base import research_agent_stream
 from gemini.sqlite_crud import chat_db
 import json
 import asyncio
@@ -124,6 +125,56 @@ async def _generate_and_update_title(session_id: str, first_message: str):
     except Exception as e:
         # If title generation fails, set a default title
         chat_db.update_session_title(session_id, "New Chat")
+
+
+@app.websocket("/ws/research")
+async def websocket_research(websocket: WebSocket):
+    """
+    WebSocket endpoint for deep research agent.
+    
+    Provides real-time progress updates and streams the final answer.
+    """
+    await websocket.accept()
+    try:
+        # Receive the query from client
+        data = await websocket.receive_text()
+        request_data = json.loads(data)
+        query = request_data.get("query", "")
+        model = request_data.get("model", "gemini-2.0-flash")
+        session_id = request_data.get("session_id")  # Optional session_id
+
+        if not query:
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "message": "No query provided"
+            }))
+            return
+
+        # Progress callback to send updates via WebSocket
+        async def send_progress(update: dict):
+            await websocket.send_text(json.dumps(update))
+
+        # Stream research results
+        async for update in research_agent_stream(
+            query=query,
+            model=model,
+            session_id=session_id,
+            progress_callback=send_progress
+        ):
+            # Send update to client
+            await websocket.send_text(json.dumps(update))
+            
+            # If error or final result, we're done
+            if update.get("type") in ["error", "result"]:
+                break
+
+    except Exception as e:
+        await websocket.send_text(json.dumps({
+            "type": "error",
+            "message": f"Research failed: {str(e)}"
+        }))
+    finally:
+        await websocket.close()
 
 
 # ========================================
