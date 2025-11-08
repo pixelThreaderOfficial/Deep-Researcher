@@ -18,9 +18,10 @@ const ResearchArea = ({
     researchSources = [],
     researchImages = [],
     researchNews = null,
-    researchMetadata = null
+    researchMetadata = null,
+    initialInput = ''
 }) => {
-    const [input, setInput] = useState('')
+    const [input, setInput] = useState(initialInput || '')
     const [attachedFiles, setAttachedFiles] = useState([])
     const [isRecording, setIsRecording] = useState(false)
     const [isMultiline, setIsMultiline] = useState(false)
@@ -68,26 +69,16 @@ const ResearchArea = ({
         return () => el.removeEventListener('scroll', handleScroll)
     }, [])
 
-    // Auto-resize textarea
+    // Auto-send initial input when component mounts with initialInput
     useEffect(() => {
-        const textarea = textareaRef.current
-        if (!textarea) return
-
-        const adjustHeight = () => {
-            textarea.style.height = 'auto'
-            const scrollHeight = textarea.scrollHeight
-            const maxHeight = 200 // Maximum height in pixels
-            textarea.style.height = Math.min(scrollHeight, maxHeight) + 'px'
-
-            // Enable multiline mode if content is tall enough
-            setIsMultiline(scrollHeight > 60)
+        if (initialInput && initialInput.trim() && !isProcessing) {
+            // Small delay to ensure component is fully mounted
+            const timer = setTimeout(() => {
+                handleSend()
+            }, 100)
+            return () => clearTimeout(timer)
         }
-
-        textarea.addEventListener('input', adjustHeight)
-        adjustHeight() // Initial adjustment
-
-        return () => textarea.removeEventListener('input', adjustHeight)
-    }, [input])
+    }, [initialInput, isProcessing])
 
     const triggerFileInput = (type) => {
         if (fileInputRef.current) {
@@ -188,6 +179,10 @@ const ResearchArea = ({
         }
         return messages
     }, [messages, streamingIdx])
+
+    const stableKey = useMemo(() => {
+        return stableView.map(m => m.id || `${m.role}-${m.createdAt}`).join(',')
+    }, [stableView])
 
     // Render message content with proper formatting
     const renderMessageContent = (content, isUser = false) => {

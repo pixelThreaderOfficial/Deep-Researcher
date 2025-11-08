@@ -23,6 +23,7 @@ const Chat = () => {
     const [researchImages, setResearchImages] = useState([])
     const [researchNews, setResearchNews] = useState(null)
     const [researchMetadata, setResearchMetadata] = useState(null)
+    const [initialResearchInput, setInitialResearchInput] = useState('')
     const unlistenRefs = useRef({ stream: null, done: null })
     const wsRef = useRef(null)
     const currentStreamingMessageIdRef = useRef(null)
@@ -526,37 +527,20 @@ const Chat = () => {
             if (!sessionStorage.getItem(seededKey)) {
                 sessionStorage.setItem(seededKey, '1')
 
-                // Check if session exists, create if needed
-                const createChatIfNeeded = async () => {
-                    try {
-                        const response = await fetch(`http://localhost:8000/api/sessions/${id}`)
-                        const data = await response.json()
-
-                        // If session doesn't exist (404), it will be created when first message is sent via WebSocket
-                        if (!data.success && response.status === 404) {
-                            console.log('Session will be created with first message:', id)
-                        }
-                    } catch (error) {
-                        console.error('Error checking session:', error)
-                        // Continue anyway - session will be created with first message
-                    }
-                }
-
-                // Start WebSocket streaming with the initial message
-                setMessagesByChat(prev => {
-                    const currentMessages = prev[id] || []
-                    const updatedMessages = [...currentMessages, initialMsg]
-                    return {
-                        ...prev,
-                        [id]: updatedMessages
-                    }
-                })
-                setIsProcessing(true)
-
-                // Use research WebSocket if in research mode
+                // If research mode is enabled, populate the input field instead of starting research automatically
                 if (researchMode) {
-                    connectResearchWebSocket(id, initialMsg.content, selectedModel || 'gemini-2.0-flash')
+                    setInitialResearchInput(initialMsg.content)
                 } else {
+                    // Start WebSocket streaming with the initial message for regular chat
+                    setMessagesByChat(prev => {
+                        const currentMessages = prev[id] || []
+                        const updatedMessages = [...currentMessages, initialMsg]
+                        return {
+                            ...prev,
+                            [id]: updatedMessages
+                        }
+                    })
+                    setIsProcessing(true)
                     connectWebSocket(id, initialMsg.content, selectedModel || 'gemini-2.5-flash', false)
                 }
             }
@@ -739,6 +723,7 @@ const Chat = () => {
                             researchImages={researchImages}
                             researchNews={researchNews}
                             researchMetadata={researchMetadata}
+                            initialInput={initialResearchInput}
                         />
                     ) : (
                         <ChatArea
