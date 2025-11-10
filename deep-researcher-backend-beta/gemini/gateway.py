@@ -3,7 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi import WebSocket
 from fastapi.responses import FileResponse, JSONResponse
 from gemini.models.models import get_model_names, get_available_models
-from gemini.gen.genText import generate_content_stream, generate_content, generate_session_title_async
+from gemini.gen.genText import (
+    generate_content_stream,
+    generate_content,
+    generate_session_title_async,
+)
 from gemini.gen.research_base import research_agent_stream
 from gemini.sqlite_crud import chat_db
 import json
@@ -53,7 +57,9 @@ def serve_file(file_type: str, filename: str, user_agent: Optional[str] = None):
         url_path = f"{file_type}/{filename}"
         file_data = get_file_by_url_path(url_path)
         if not file_data:
-            return JSONResponse({"success": False, "error": "File not found"}, status_code=404)
+            return JSONResponse(
+                {"success": False, "error": "File not found"}, status_code=404
+            )
 
         # Log access
         log_file_access(
@@ -62,9 +68,13 @@ def serve_file(file_type: str, filename: str, user_agent: Optional[str] = None):
             user_agent=user_agent,
         )
 
-        return FileResponse(file_data["file_path"], media_type=file_data.get("mime_type") or "application/octet-stream")
+        return FileResponse(
+            file_data["file_path"],
+            media_type=file_data.get("mime_type") or "application/octet-stream",
+        )
     except Exception as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
 
 @app.get("/models")
 def get_models():
@@ -73,7 +83,8 @@ def get_models():
         return {"success": True, "models": models}
     except Exception as e:
         return {"success": False, "error": "Error getting models", "message": str(e)}
-    
+
+
 @app.get("/models/list")
 def get_models_list():
     try:
@@ -102,7 +113,7 @@ async def websocket_generate(websocket: WebSocket):
         # Handle session creation/retrieval
         context_messages = []
         is_new_session = False
-        
+
         if session_id:
             # Check if session exists
             session = chat_db.get_session_by_id(session_id)
@@ -112,7 +123,9 @@ async def websocket_generate(websocket: WebSocket):
                 is_new_session = True
             else:
                 # Get context for existing session
-                context_messages = chat_db.get_session_context(session_id, max_chars=1000, max_messages=10)
+                context_messages = chat_db.get_session_context(
+                    session_id, max_chars=1000, max_messages=10
+                )
         else:
             # Create new session
             session_id = chat_db.create_chat_session()
@@ -120,7 +133,9 @@ async def websocket_generate(websocket: WebSocket):
 
         # Stream the response
         chatid = None
-        async for chunk in generate_content_stream(prompt, thinking, model, session_id, context_messages):
+        async for chunk in generate_content_stream(
+            prompt, thinking, model, session_id, context_messages
+        ):
             if chunk.startswith("CHATID:"):
                 # Extract chatid from the special marker
                 chatid = chunk.split("CHATID:", 1)[1]
@@ -130,9 +145,7 @@ async def websocket_generate(websocket: WebSocket):
         # Generate title in background if this is a new session
         if is_new_session:
             # Start title generation as background task
-            asyncio.create_task(
-                _generate_and_update_title(session_id, prompt)
-            )
+            asyncio.create_task(_generate_and_update_title(session_id, prompt))
 
         # Send completion signal with chatid and session_id
         completion_data = {"done": True}
@@ -162,7 +175,7 @@ async def _generate_and_update_title(session_id: str, first_message: str):
 async def websocket_research(websocket: WebSocket):
     """
     WebSocket endpoint for deep research agent.
-    
+
     Provides real-time progress updates and streams the final answer.
     """
     await websocket.accept()
@@ -175,10 +188,9 @@ async def websocket_research(websocket: WebSocket):
         session_id = request_data.get("session_id")  # Optional session_id
 
         if not query:
-            await websocket.send_text(json.dumps({
-                "type": "error",
-                "message": "No query provided"
-            }))
+            await websocket.send_text(
+                json.dumps({"type": "error", "message": "No query provided"})
+            )
             return
 
         # Progress callback to send updates via WebSocket
@@ -190,20 +202,19 @@ async def websocket_research(websocket: WebSocket):
             query=query,
             model=model,
             session_id=session_id,
-            progress_callback=send_progress
+            progress_callback=send_progress,
         ):
             # Send update to client
             await websocket.send_text(json.dumps(update))
-            
+
             # If error or final result, we're done
             if update.get("type") in ["error", "result"]:
                 break
 
     except Exception as e:
-        await websocket.send_text(json.dumps({
-            "type": "error",
-            "message": f"Research failed: {str(e)}"
-        }))
+        await websocket.send_text(
+            json.dumps({"type": "error", "message": f"Research failed: {str(e)}"})
+        )
     finally:
         await websocket.close()
 
@@ -212,14 +223,20 @@ async def websocket_research(websocket: WebSocket):
 # CHAT HISTORY API ENDPOINTS
 # ========================================
 
+
 @app.post("/api/chat/generate")
-def generate_chat(prompt: str, thinking: bool = False, model: str = "gemini-2.0-flash", session_id: str = None):
+def generate_chat(
+    prompt: str,
+    thinking: bool = False,
+    model: str = "gemini-2.0-flash",
+    session_id: str = None,
+):
     """Generate content and save to chat history (non-streaming)"""
     try:
         # Handle session creation/retrieval
         context_messages = []
         is_new_session = False
-        
+
         if session_id:
             # Check if session exists
             session = chat_db.get_session_by_id(session_id)
@@ -229,20 +246,20 @@ def generate_chat(prompt: str, thinking: bool = False, model: str = "gemini-2.0-
                 is_new_session = True
             else:
                 # Get context for existing session
-                context_messages = chat_db.get_session_context(session_id, max_chars=1000, max_messages=10)
+                context_messages = chat_db.get_session_context(
+                    session_id, max_chars=1000, max_messages=10
+                )
         else:
             # Create new session
             session_id = chat_db.create_chat_session()
             is_new_session = True
-        
+
         result = generate_content(prompt, thinking, model, session_id, context_messages)
-        
+
         # Generate title in background if this is a new session
         if is_new_session:
-            asyncio.create_task(
-                _generate_and_update_title(session_id, prompt)
-            )
-        
+            asyncio.create_task(_generate_and_update_title(session_id, prompt))
+
         return {"success": True, "data": result}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -311,6 +328,7 @@ def delete_chat(chatid: str):
 # CHAT SESSION API ENDPOINTS
 # ========================================
 
+
 @app.get("/api/sessions")
 def get_all_sessions(limit: int = 100, offset: int = 0):
     """Get all chat sessions with pagination"""
@@ -318,10 +336,10 @@ def get_all_sessions(limit: int = 100, offset: int = 0):
         sessions = chat_db.get_all_sessions(limit, offset)
         # Add message count and stats to each session
         for session in sessions:
-            session_id = session.get('session_id')
+            session_id = session.get("session_id")
             if session_id:
                 stats = chat_db.get_session_stats(session_id)
-                session['stats'] = stats
+                session["stats"] = stats
         return {"success": True, "sessions": sessions}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -334,14 +352,14 @@ def get_session(session_id: str):
         session = chat_db.get_session_by_id(session_id)
         if not session:
             return {"success": False, "error": "Session not found"}
-        
+
         # Get messages for this session
         messages = chat_db.get_session_messages(session_id)
         stats = chat_db.get_session_stats(session_id)
-        
-        session['messages'] = messages
-        session['stats'] = stats
-        
+
+        session["messages"] = messages
+        session["stats"] = stats
+
         return {"success": True, "session": session}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -354,7 +372,7 @@ def get_session_messages(session_id: str, limit: int = 100):
         session = chat_db.get_session_by_id(session_id)
         if not session:
             return {"success": False, "error": "Session not found"}
-        
+
         messages = chat_db.get_session_messages(session_id, limit)
         return {"success": True, "messages": messages}
     except Exception as e:
@@ -368,7 +386,7 @@ def update_session_title(session_id: str, title_update: TitleUpdate):
         session = chat_db.get_session_by_id(session_id)
         if not session:
             return {"success": False, "error": "Session not found"}
-        
+
         updated = chat_db.update_session_title(session_id, title_update.title)
         if updated:
             return {"success": True, "message": "Title updated successfully"}
@@ -398,22 +416,26 @@ async def regenerate_session_title(session_id: str):
         session = chat_db.get_session_by_id(session_id)
         if not session:
             return {"success": False, "error": "Session not found"}
-        
+
         # Get first message
         messages = chat_db.get_session_messages(session_id, limit=1)
         if not messages:
             return {"success": False, "error": "No messages found in session"}
-        
-        first_message = messages[0].get('prompt', '')
+
+        first_message = messages[0].get("prompt", "")
         if not first_message:
             return {"success": False, "error": "No prompt found in first message"}
-        
+
         # Generate new title
         title = await generate_session_title_async(first_message)
         updated = chat_db.update_session_title(session_id, title)
-        
+
         if updated:
-            return {"success": True, "title": title, "message": "Title regenerated successfully"}
+            return {
+                "success": True,
+                "title": title,
+                "message": "Title regenerated successfully",
+            }
         else:
             return {"success": False, "error": "Failed to update title"}
     except Exception as e:
@@ -427,7 +449,7 @@ def get_session_stats(session_id: str):
         session = chat_db.get_session_by_id(session_id)
         if not session:
             return {"success": False, "error": "Session not found"}
-        
+
         stats = chat_db.get_session_stats(session_id)
         return {"success": True, "stats": stats}
     except Exception as e:
@@ -437,6 +459,7 @@ def get_session_stats(session_id: str):
 # ========================================
 # CHAT SETTINGS API ENDPOINTS
 # ========================================
+
 
 @app.post("/api/settings/global")
 def create_or_update_global_settings(
@@ -448,7 +471,7 @@ def create_or_update_global_settings(
     top_k: float = 0.9,
     document_analysis_mode: str = "off",
     enable_thinking: bool = False,
-    max_previous_memory_retention: int = 5
+    max_previous_memory_retention: int = 5,
 ):
     """Create or update global chat settings"""
     try:
@@ -461,7 +484,7 @@ def create_or_update_global_settings(
             top_k=top_k,
             document_analysis_mode=document_analysis_mode,
             enable_thinking=enable_thinking,
-            max_previous_memory_retention=max_previous_memory_retention
+            max_previous_memory_retention=max_previous_memory_retention,
         )
         return {"success": True, "settings_id": settings_id}
     except Exception as e:
@@ -479,7 +502,7 @@ def create_chat_settings(
     top_k: float = 0.9,
     document_analysis_mode: str = "off",
     enable_thinking: bool = False,
-    max_previous_memory_retention: int = 5
+    max_previous_memory_retention: int = 5,
 ):
     """Create settings for a specific chat"""
     try:
@@ -494,7 +517,7 @@ def create_chat_settings(
             enable_thinking=enable_thinking,
             max_previous_memory_retention=max_previous_memory_retention,
             chat_id=chat_id,
-            is_global=False
+            is_global=False,
         )
         return {"success": True, "settings_id": settings_id}
     except Exception as e:
@@ -538,7 +561,7 @@ def update_chat_settings(
     top_k: float = None,
     document_analysis_mode: str = None,
     enable_thinking: bool = None,
-    max_previous_memory_retention: int = None
+    max_previous_memory_retention: int = None,
 ):
     """Update settings for a specific chat"""
     try:
@@ -552,7 +575,7 @@ def update_chat_settings(
             top_k=top_k,
             document_analysis_mode=document_analysis_mode,
             enable_thinking=enable_thinking,
-            max_previous_memory_retention=max_previous_memory_retention
+            max_previous_memory_retention=max_previous_memory_retention,
         )
         if updated:
             return {"success": True, "message": "Settings updated successfully"}
@@ -572,7 +595,7 @@ def update_global_settings(
     top_k: float = None,
     document_analysis_mode: str = None,
     enable_thinking: bool = None,
-    max_previous_memory_retention: int = None
+    max_previous_memory_retention: int = None,
 ):
     """Update global settings"""
     try:
@@ -587,7 +610,7 @@ def update_global_settings(
             document_analysis_mode=document_analysis_mode,
             enable_thinking=enable_thinking,
             max_previous_memory_retention=max_previous_memory_retention,
-            is_global=True
+            is_global=True,
         )
         if updated:
             return {"success": True, "message": "Global settings updated successfully"}
@@ -638,4 +661,3 @@ def delete_chat_settings(chat_id: str):
 # @app.post("/api/v0/rag/query_documents")
 # def query_documents(query: str = Form(...)):
 #     pass
-

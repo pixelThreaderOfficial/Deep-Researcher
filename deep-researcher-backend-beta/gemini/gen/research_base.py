@@ -627,7 +627,9 @@ Please provide a detailed, accurate answer based on the research context. Includ
                 "session_id": session_id,
                 "timestamp": datetime.now().isoformat(),
             }
-            transcript_bytes = json.dumps(transcript, ensure_ascii=False, indent=2).encode("utf-8")
+            transcript_bytes = json.dumps(
+                transcript, ensure_ascii=False, indent=2
+            ).encode("utf-8")
             transcript_save = store_generated_content(
                 content=transcript_bytes,
                 filename="research_transcript.json",
@@ -659,10 +661,26 @@ Please provide a detailed, accurate answer based on the research context. Includ
                     "model": model,
                     "session_id": session_id,
                     "transcript_file": {
-                        "file_id": transcript_save.get("file_id") if isinstance(transcript_save, dict) else None,
-                        "file_url": transcript_save.get("file_url") if isinstance(transcript_save, dict) else None,
-                        "success": transcript_save.get("success") if isinstance(transcript_save, dict) else False,
-                        "error": transcript_save.get("error") if isinstance(transcript_save, dict) else None,
+                        "file_id": (
+                            transcript_save.get("file_id")
+                            if isinstance(transcript_save, dict)
+                            else None
+                        ),
+                        "file_url": (
+                            transcript_save.get("file_url")
+                            if isinstance(transcript_save, dict)
+                            else None
+                        ),
+                        "success": (
+                            transcript_save.get("success")
+                            if isinstance(transcript_save, dict)
+                            else False
+                        ),
+                        "error": (
+                            transcript_save.get("error")
+                            if isinstance(transcript_save, dict)
+                            else None
+                        ),
                     },
                 },
             },
