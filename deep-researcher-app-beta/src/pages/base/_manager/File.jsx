@@ -129,7 +129,14 @@ const FileView = () => {
                     comparison = a.name.localeCompare(b.name)
                     break
                 case 'date':
-                    comparison = new Date(a.dateCreated || a.date) - new Date(b.dateCreated || b.date)
+                    // Use raw date string for more accurate comparison
+                    const dateA = a.dateCreated || a.date || 0
+                    const dateB = b.dateCreated || b.date || 0
+                    comparison = new Date(dateA).getTime() - new Date(dateB).getTime()
+                    // Fallback if dates are invalid
+                    if (isNaN(comparison)) {
+                        comparison = String(dateA).localeCompare(String(dateB))
+                    }
                     break
                 case 'size':
                     comparison = (a.sizeBytes || 0) - (b.sizeBytes || 0)
@@ -492,8 +499,8 @@ const FileView = () => {
                                 </div>
                                 <div className="flex justify-between items-center">
                                     <span className={`px-2 py-1 rounded-full text-xs ${file.ioTag === 'generated' ? 'bg-blue-500/20 text-blue-400' :
-                                            file.ioTag === 'uploaded' ? 'bg-green-500/20 text-green-400' :
-                                                'bg-purple-500/20 text-purple-400'
+                                        file.ioTag === 'uploaded' ? 'bg-green-500/20 text-green-400' :
+                                            'bg-purple-500/20 text-purple-400'
                                         }`}>
                                         {file.user}
                                     </span>

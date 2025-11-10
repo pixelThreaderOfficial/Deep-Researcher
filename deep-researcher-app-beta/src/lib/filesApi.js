@@ -23,13 +23,35 @@ function normalizeFile(payload) {
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     };
 
+    // Safely parse date - handle invalid formats
+    const parseDate = (dateStr) => {
+        if (!dateStr) return '';
+        try {
+            // Fix malformed ISO strings like "2025-11-10T06:22:32.048609+00:00Z"
+            // Remove the 'Z' if timezone offset is present
+            let cleanDate = dateStr;
+            if (dateStr.includes('+') && dateStr.endsWith('Z')) {
+                cleanDate = dateStr.slice(0, -1); // Remove trailing Z
+            }
+            const date = new Date(cleanDate);
+            if (isNaN(date.getTime())) {
+                console.warn('Invalid date format:', dateStr);
+                return '';
+            }
+            return date.toISOString().split('T')[0];
+        } catch (err) {
+            console.warn('Failed to parse date:', dateStr, err);
+            return '';
+        }
+    };
+
     return {
         id: f.file_id ?? f.id,
         name: f.document_name ?? f.stored_filename ?? 'Unknown',
         storedFilename: f.stored_filename,
         size: formatSize(f.size_bytes),
         sizeBytes: f.size_bytes ?? 0,
-        date: f.date_created ? new Date(f.date_created).toISOString().split('T')[0] : '',
+        date: parseDate(f.date_created),
         dateCreated: f.date_created,
         type: f.mime_type ?? 'Unknown',
         mimeType: f.mime_type,
