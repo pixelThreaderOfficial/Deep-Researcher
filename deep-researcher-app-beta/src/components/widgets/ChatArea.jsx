@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Mic, MicOff, Paperclip, Send, Loader2, Copy, Volume2, RefreshCw, Sparkles, ChevronDown } from 'lucide-react'
+import { Mic, MicOff, Paperclip, Send, Loader2, Copy, Volume2, RefreshCw, Sparkles, ChevronDown, ExternalLink, Clock, FileText as FileTextIcon, Image as ImageIcon, Newspaper, BarChart3, Link } from 'lucide-react'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../ui/dropdown-menu'
-import { FileText, Image as ImageIcon, File } from 'lucide-react'
+import { FileText, Image, File } from 'lucide-react'
+import { Badge } from '../ui/badge'
+import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import '../../md.css'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -10,7 +12,17 @@ import CodeBlock from './CodeBlock'
 import StreamingMessageView from './StreamingMessageView'
 import ThinkingMarkdown from './ThinkingMarkdown'
 
-const ChatArea = ({ messages, onSend, isProcessing }) => {
+const ChatArea = ({
+    messages,
+    onSend,
+    isProcessing,
+    isResearchMode = false,
+    researchProgress = '',
+    researchSources = [],
+    researchImages = [],
+    researchNews = null,
+    researchMetadata = null
+}) => {
     const [input, setInput] = useState('')
     const [attachedFiles, setAttachedFiles] = useState([])
     const [isRecording, setIsRecording] = useState(false)
@@ -386,6 +398,190 @@ const ChatArea = ({ messages, onSend, isProcessing }) => {
                     </button>
                 )}
             </div>
+
+            {/* Research Results */}
+            {isResearchMode && (
+                <div className="w-full max-w-[900px] mx-auto px-4 pb-6">
+                    <AnimatePresence>
+                        {/* Progress Indicator */}
+                        {(isProcessing || researchProgress) && (
+                            <motion.div
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -10 }}
+                                className="mb-6"
+                            >
+                                <Card className="bg-gray-800/50 border-gray-700">
+                                    <CardContent className="p-4">
+                                        <div className="flex items-center gap-3">
+                                            {isProcessing ? (
+                                                <Loader2 className="w-5 h-5 animate-spin text-blue-400" />
+                                            ) : (
+                                                <BarChart3 className="w-5 h-5 text-green-400" />
+                                            )}
+                                            <span className="text-gray-200 font-medium">
+                                                {researchProgress || 'Research in progress...'}
+                                            </span>
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            </motion.div>
+                        )}
+
+                        {/* Sources */}
+                        {researchSources.length > 0 && (
+                            <motion.div
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                className="mb-6"
+                            >
+                                <Card className="bg-gray-800/50 border-gray-700">
+                                    <CardHeader className="pb-3">
+                                        <CardTitle className="text-gray-200 flex items-center gap-2">
+                                            <Link className="w-5 h-5" />
+                                            Sources ({researchSources.length})
+                                        </CardTitle>
+                                    </CardHeader>
+                                    <CardContent>
+                                        <div className="grid grid-cols-1 gap-2">
+                                            {researchSources.map((source, index) => (
+                                                <a
+                                                    key={index}
+                                                    href={source}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    className="flex items-center gap-2 p-2 rounded-md bg-gray-700/50 hover:bg-gray-700 transition-colors text-gray-300 hover:text-gray-100"
+                                                >
+                                                    <ExternalLink className="w-4 h-4 flex-shrink-0" />
+                                                    <span className="truncate text-sm">{source}</span>
+                                                </a>
+                                            ))}
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            </motion.div>
+                        )}
+
+                        {/* Images */}
+                        {researchImages.length > 0 && (
+                            <motion.div
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                className="mb-6"
+                            >
+                                <Card className="bg-gray-800/50 border-gray-700">
+                                    <CardHeader className="pb-3">
+                                        <CardTitle className="text-gray-200 flex items-center gap-2">
+                                            <ImageIcon className="w-5 h-5" />
+                                            Images ({researchImages.length})
+                                        </CardTitle>
+                                    </CardHeader>
+                                    <CardContent>
+                                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                                            {researchImages.map((image, index) => (
+                                                <div key={index} className="group relative">
+                                                    <img
+                                                        src={image.file_url}
+                                                        alt={image.title || 'Research image'}
+                                                        className="w-full h-24 object-cover rounded-md border border-gray-600 group-hover:border-gray-500 transition-colors cursor-pointer"
+                                                        onClick={() => window.open(image.file_url, '_blank')}
+                                                    />
+                                                    <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity rounded-md flex items-center justify-center">
+                                                        <ExternalLink className="w-5 h-5 text-white" />
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            </motion.div>
+                        )}
+
+                        {/* News */}
+                        {researchNews && researchNews.items && researchNews.items.length > 0 && (
+                            <motion.div
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                className="mb-6"
+                            >
+                                <Card className="bg-gray-800/50 border-gray-700">
+                                    <CardHeader className="pb-3">
+                                        <CardTitle className="text-gray-200 flex items-center gap-2">
+                                            <Newspaper className="w-5 h-5" />
+                                            News ({researchNews.items.length})
+                                        </CardTitle>
+                                    </CardHeader>
+                                    <CardContent>
+                                        <div className="space-y-3">
+                                            {researchNews.items.map((item, index) => (
+                                                <div key={index} className="border border-gray-600 rounded-md p-3 bg-gray-700/30">
+                                                    <h4 className="text-gray-100 font-medium mb-1">{item.title}</h4>
+                                                    <p className="text-gray-300 text-sm mb-2">{item.body}</p>
+                                                    <div className="flex items-center justify-between text-xs text-gray-400">
+                                                        <span>{item.source}</span>
+                                                        <div className="flex items-center gap-3">
+                                                            <span className="flex items-center gap-1">
+                                                                <Clock className="w-3 h-3" />
+                                                                {new Date(item.date).toLocaleDateString()}
+                                                            </span>
+                                                            <a
+                                                                href={item.url}
+                                                                target="_blank"
+                                                                rel="noopener noreferrer"
+                                                                className="flex items-center gap-1 text-blue-400 hover:text-blue-300"
+                                                            >
+                                                                <ExternalLink className="w-3 h-3" />
+                                                                View
+                                                            </a>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            </motion.div>
+                        )}
+
+                        {/* Metadata */}
+                        {researchMetadata && (
+                            <motion.div
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                            >
+                                <Card className="bg-gray-800/50 border-gray-700">
+                                    <CardHeader className="pb-3">
+                                        <CardTitle className="text-gray-200 flex items-center gap-2">
+                                            <BarChart3 className="w-5 h-5" />
+                                            Research Summary
+                                        </CardTitle>
+                                    </CardHeader>
+                                    <CardContent>
+                                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+                                            <div className="bg-gray-700/50 rounded-md p-3">
+                                                <div className="text-2xl font-bold text-blue-400">{researchMetadata.sources_count || 0}</div>
+                                                <div className="text-xs text-gray-400">Sources</div>
+                                            </div>
+                                            <div className="bg-gray-700/50 rounded-md p-3">
+                                                <div className="text-2xl font-bold text-green-400">{researchMetadata.images_count || 0}</div>
+                                                <div className="text-xs text-gray-400">Images</div>
+                                            </div>
+                                            <div className="bg-gray-700/50 rounded-md p-3">
+                                                <div className="text-2xl font-bold text-purple-400">{researchMetadata.news_count || 0}</div>
+                                                <div className="text-xs text-gray-400">News</div>
+                                            </div>
+                                            <div className="bg-gray-700/50 rounded-md p-3">
+                                                <div className="text-2xl font-bold text-orange-400">{researchMetadata.research_time ? researchMetadata.research_time.toFixed(1) : '0.0'}</div>
+                                                <div className="text-xs text-gray-400">Seconds</div>
+                                            </div>
+                                        </div>
+                                    </CardContent>
+                                </Card>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+                </div>
+            )}
 
             {/* Composer */}
             <div className="p-3">

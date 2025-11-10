@@ -585,7 +585,7 @@ async def _scrape_urls_async(urls: List[str]) -> Dict[str, str]:
 def web_search(
     query: str,
     region: str = "us-en",
-    safesearch: str = "moderate",
+    safesearch: str = "on",
     timelimit: Optional[str] = None,
     max_results: Optional[int] = 10,
     page: int = 1,
@@ -681,50 +681,50 @@ def image_search(
     )
 
 
-if __name__ == "__main__":
+# if __name__ == "__main__":
     # Example web search
-    web_results = web_search(
-        'python programming filetype:pdf',
-        region='us-en',
-        safesearch='off',
-        timelimit='y',
-        max_results=5
-    )
-    print("Web Search Results:")
-    print(json.dumps(web_results, indent=2))
+    # web_results = web_search(
+    #     'python programming filetype:pdf',
+    #     region='us-en',
+    #     safesearch='off',
+    #     timelimit='y',
+    #     max_results=5
+    # )
+    # print("Web Search Results:")
+    # print(json.dumps(web_results, indent=2))
 
-    # Example news search
-    news_results = news_search(
-        'artificial intelligence',
-        region='us-en',
-        timelimit='w',
-        max_results=5
-    )
-    print("\nNews Search Results:")
-    print(json.dumps(news_results, indent=2))
+# Example news search
+# news_results = news_search(
+#     'artificial intelligence',
+#     region='us-en',
+#     timelimit='w',
+#     max_results=5
+# )
+# print("\nNews Search Results:")
+# print(json.dumps(news_results, indent=2))
 
-    # Example image search
-    image_results = image_search(
-        'nature photography',
-        region='us-en',
-        max_results=5
-    )
-    print("\nImage Search Results:")
-    print(json.dumps(image_results, indent=2))
+    # # Example image search
+    # image_results = image_search(
+    #     'nature photography',
+    #     region='us-en',
+    #     max_results=5
+    # )
+    # print("\nImage Search Results:")
+    # print(json.dumps(image_results, indent=2))
 
 
-    # Test single URL
-    # print("Testing scrape_url()...")
-    # result = scrape_url("https://www.aycreation.com")
-    # print(f"Scraped {len(result)} characters")
-    # print(result[:500])  # Print first 500 chars
+    # # Test single URL
+    # # print("Testing scrape_url()...")
+    # # result = scrape_url("https://www.aycreation.com")
+    # # print(f"Scraped {len(result)} characters")
+    # # print(result[:500])  # Print first 500 chars
 
-    # print("\n" + "=" * 50 + "\n")
+    # # print("\n" + "=" * 50 + "\n")
 
-    # # Test multiple URLs
-    # print("Testing scrape_urls()...")
-    # urls = ["https://admin.thehealthequip.com", "https://www.pixelthreader.in"]
-    # results = scrape_urls(urls)
-    # for url, content in results.items():
-    #     print(f"\n{url}: {len(content)} characters")
-    #     print(content[:300])  # Print first 300 chars
+    # # # Test multiple URLs
+    # # print("Testing scrape_urls()...")
+    # # urls = ["https://admin.thehealthequip.com", "https://www.pixelthreader.in"]
+    # # results = scrape_urls(urls)
+    # # for url, content in results.items():
+    # #     print(f"\n{url}: {len(content)} characters")
+    # #     print(content[:300])  # Print first 300 chars

@@ -5,11 +5,16 @@ import {
     TooltipContent,
     TooltipTrigger,
 } from "@/components/ui/tooltip"
+import {
+    ContextMenu,
+    ContextMenuContent,
+    ContextMenuItem,
+    ContextMenuTrigger,
+} from "@/components/ui/context-menu"
 import { Avatar, AvatarFallback } from '../ui/avatar'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { cn } from '../../lib/utils'
-import { Plus, Search, BookOpen, Folder, Cpu, Settings, PanelRightClose, PanelRightOpen } from 'lucide-react'
-import { invoke } from '@tauri-apps/api/core'
+import { Plus, Search, BookOpen, Folder, Cpu, Settings, PanelRightClose, PanelRightOpen, Edit3, Trash2 } from 'lucide-react'
 
 
 
@@ -17,6 +22,8 @@ const ChatSidebar = ({
     recentChats = [],
     onNewChat,
     onSelectChat,
+    onRenameChat,
+    onDeleteChat,
     activeChatId,
 }) => {
     const [query, setQuery] = useState('')
@@ -29,23 +36,33 @@ const ChatSidebar = ({
 
     const isSettingsActive = location.pathname.startsWith('/app/settings')
     const isFilesActive = location.pathname.startsWith('/app/files')
-    // Load chats from database
+    // Load sessions from API
     const loadChatsFromDatabase = async () => {
         try {
             setIsLoadingChats(true)
-            const chats = await invoke('cmd_get_recent_chats', { limit: 50 })
+            const response = await fetch('http://localhost:8000/api/sessions?limit=50&offset=0')
+            const data = await response.json()
 
-            // Convert database format to component format
-            const formattedChats = chats.map(chat => ({
-                id: chat.id,
-                title: chat.title,
-                updatedAt: new Date(chat.updated_at).toLocaleDateString(),
-            }))
+            if (data.success && data.sessions) {
+                // Convert to component format
+                const formattedChats = data.sessions.map(session => ({
+                    id: session.session_id,
+                    title: session.title || `Chat ${session.id}`,
+                    updatedAt: new Date(session.updated_at * 1000).toLocaleDateString(),
+                    messageCount: session.stats?.total_messages || 0,
+                    model: session.stats?.unique_models === 1 ? 'Single Model' : 'Multiple Models',
+                    createdAt: new Date(session.created_at * 1000).toLocaleDateString()
+                }))
 
-            setDbChats(formattedChats)
+                setDbChats(formattedChats)
+            } else {
+                console.error('Failed to load sessions:', data.error)
+                setDbChats([])
+            }
         } catch (error) {
-            console.error('Failed to load chats from database:', error)
-            // Fallback to prop-based chats if database fails
+            console.error('Failed to load chats:', error)
+            // Fallback to empty array
+            setDbChats([])
         } finally {
             setIsLoadingChats(false)
         }
@@ -62,18 +79,30 @@ const ChatSidebar = ({
         try { localStorage.setItem('dr.sidebar.collapsed', collapsed ? '1' : '0') } catch { }
     }, [collapsed])
 
-    // Load chats on component mount
+    // Load chats on component mount and when new chat is created
     useEffect(() => {
         loadChatsFromDatabase()
     }, [])
 
-    // Use database chats if available, otherwise fall back to props
+    // Refresh chats when a new chat is created (listen for changes)
+    useEffect(() => {
+        const refreshInterval = setInterval(() => {
+            loadChatsFromDatabase()
+        }, 30000) // Refresh every 30 seconds
+
+        return () => clearInterval(refreshInterval)
+    }, [])
+
+    // Use database sessions if available, otherwise fall back to props
     const allChats = dbChats.length > 0 ? dbChats : recentChats
 
     const filtered = useMemo(() => {
         if (!query) return allChats
         const q = query.toLowerCase()
-        return allChats.filter(c => (c.title || '').toLowerCase().includes(q))
+        return allChats.filter(c =>
+            (c.title || '').toLowerCase().includes(q) ||
+            (c.model || '').toLowerCase().includes(q)
+        )
     }, [allChats, query])
 
     const isExpanded = !collapsed
@@ -474,21 +503,56 @@ const ChatSidebar = ({
                             )}
                             <AnimatePresence initial={false}>
                                 {filtered.map((chat) => (
-                                    <motion.button
-                                        key={chat.id}
-                                        onClick={() => onSelectChat?.(chat.id)}
-                                        className={cn(
-                                            'w-full text-left px-2 py-2 rounded-md text-sm text-gray-300 hover:bg-gray-900/60 transition-colors',
-                                            activeChatId === chat.id && 'bg-gray-900/80 text-gray-100 border border-gray-800'
-                                        )}
-                                        initial={{ opacity: 0, y: 6 }}
-                                        animate={{ opacity: 1, y: 0 }}
-                                        exit={{ opacity: 0, y: -6 }}
-                                        transition={{ duration: 0.14 }}
-                                    >
-                                        <div className="truncate">{chat.title}</div>
-                                        <div className="text-[11px] text-gray-500">{chat.updatedAt}</div>
-                                    </motion.button>
+                                    <ContextMenu key={chat.id}>
+                                        <ContextMenuTrigger>
+                                            <motion.button
+                                                onClick={() => onSelectChat?.(chat.id)}
+                                                className={cn(
+                                                    'w-full text-left px-2 py-2 rounded-md text-sm text-gray-300 hover:bg-gray-900/60 transition-colors',
+                                                    activeChatId === chat.id && 'bg-gray-900/80 text-gray-100 border border-gray-800'
+                                                )}
+                                                initial={{ opacity: 0, y: 6 }}
+                                                animate={{ opacity: 1, y: 0 }}
+                                                exit={{ opacity: 0, y: -6 }}
+                                                transition={{ duration: 0.14 }}
+                                            >
+                                                <div className="truncate">{chat.title}</div>
+                                                <div className="text-[11px] text-gray-500">{chat.updatedAt}</div>
+                                            </motion.button>
+                                        </ContextMenuTrigger>
+                                        <ContextMenuContent className="bg-gray-800 border border-gray-600">
+                                            <ContextMenuItem
+                                                onClick={() => onSelectChat?.(chat.id)}
+                                                className="text-gray-200 hover:bg-gray-700 focus:bg-gray-700"
+                                            >
+                                                <BookOpen className="w-4 h-4 mr-2" />
+                                                Open Chat
+                                            </ContextMenuItem>
+                                            <ContextMenuItem
+                                                onClick={() => {
+                                                    const newTitle = prompt('Enter new title:', chat.title)
+                                                    if (newTitle && newTitle.trim() && newTitle !== chat.title) {
+                                                        onRenameChat?.(chat.id, newTitle.trim())
+                                                    }
+                                                }}
+                                                className="text-gray-200 hover:bg-gray-700 focus:bg-gray-700"
+                                            >
+                                                <Edit3 className="w-4 h-4 mr-2" />
+                                                Rename
+                                            </ContextMenuItem>
+                                            <ContextMenuItem
+                                                onClick={() => {
+                                                    if (confirm(`Are you sure you want to delete "${chat.title}"?`)) {
+                                                        onDeleteChat?.(chat.id)
+                                                    }
+                                                }}
+                                                className="text-red-400 hover:bg-red-900/20 focus:bg-red-900/20"
+                                            >
+                                                <Trash2 className="w-4 h-4 mr-2" />
+                                                Delete
+                                            </ContextMenuItem>
+                                        </ContextMenuContent>
+                                    </ContextMenu>
                                 ))}
                             </AnimatePresence>
                         </div>
@@ -500,5 +564,7 @@ const ChatSidebar = ({
 }
 
 export default ChatSidebar
+
+
 
 

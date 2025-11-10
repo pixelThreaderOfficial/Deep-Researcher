@@ -1,9 +1,8 @@
-from chromadb import Client as ChromaClient
+from chromadb import Client as ChromaClient, Settings
 from chromadb.utils.embedding_functions import GoogleGenerativeAiEmbeddingFunction
 from typing import List, Dict, Any, Optional, Union
-import dotenv, os
-import uuid
-import hashlib
+import dotenv, os, hashlib
+from pathlib import Path
 
 dotenv.load_dotenv()
 
@@ -12,13 +11,32 @@ collectionName = "deep_researcher"
 if os.getenv("APPLICATION_PHASE") == "development":
     collectionName="deep_researcher_beta"
 
-vectorClient = ChromaClient()
+# Set up ChromaDB persistence directory inside rag_store/
+RAG_DB_PATH = Path(__file__).parent / "rag_vector_db"
+RAG_DB_PATH.mkdir(exist_ok=True)
 
-# Main research collection for RAG
-research_collection = vectorClient.get_or_create_collection(name=collectionName)
+# Initialize ChromaDB client with persistent storage
+# Using the latest ChromaDB best practices
+try:
+    vectorClient = ChromaClient(Settings(
+        is_persistent=True,
+        persist_directory=str(RAG_DB_PATH),
+        anonymized_telemetry=False
+    ))
+except Exception as e:
+    # Fallback for older ChromaDB versions
+    print(f"Warning: Could not initialize ChromaDB with Settings: {e}")
+    print("Falling back to basic client initialization...")
+    vectorClient = ChromaClient(path=str(RAG_DB_PATH))
 
-# Embedding function
+# Main research collection for RAG with embedding function
 google_ef = GoogleGenerativeAiEmbeddingFunction(api_key=os.getenv("GEMINI_API_KEY"))
+
+research_collection = vectorClient.get_or_create_collection(
+    name=collectionName,
+    embedding_function=google_ef,
+    metadata={"description": "Deep research knowledge base"}
+)
 
 
 # ========================================
@@ -36,6 +54,8 @@ def generate_ids_for_documents(documents: List[str]) -> List[str]:
 
 def embed_documents(documents: List[str]) -> List[List[float]]:
     """Embed a list of documents using Google Generative AI"""
+    # Since embedding function is set at collection level, this is now redundant
+    # but kept for backward compatibility
     return google_ef(documents)
 
 
@@ -63,9 +83,6 @@ def create_documents(documents: List[str], metadatas: Optional[List[Dict[str, An
         if ids is None:
             ids = generate_ids_for_documents(documents)
 
-        # Ensure we have embeddings
-        embeddings = embed_documents(documents)
-
         # Prepare metadatas
         if metadatas is None:
             metadatas = [{"created_at": str(os.times()[-1])} for _ in documents]
@@ -74,10 +91,9 @@ def create_documents(documents: List[str], metadatas: Optional[List[Dict[str, An
             while len(metadatas) < len(documents):
                 metadatas.append({"created_at": str(os.times()[-1])})
 
-        # Add to collection
+        # Add to collection (embeddings are handled automatically by the collection's embedding function)
         research_collection.add(
             documents=documents,
-            embeddings=embeddings,
             metadatas=metadatas,
             ids=ids
         )
@@ -178,10 +194,8 @@ def update_document(document_id: str, new_content: Optional[str] = None, new_met
         update_data = {}
 
         if new_content is not None:
-            # Re-embed the new content
-            embeddings = embed_documents([new_content])
+            # Collection will automatically re-embed the new content
             update_data["documents"] = [new_content]
-            update_data["embeddings"] = embeddings
 
         if new_metadata is not None:
             update_data["metadatas"] = [new_metadata]
@@ -252,7 +266,7 @@ def delete_all_documents() -> Dict[str, Any]:
 # QUERY OPERATIONS
 # ========================================
 
-def query_documents(query: str, max_results: int = 10, include_metadata: bool = True) -> Dict[str, Any]:
+def query_documents(query: str, max_results: int = 10, include_metadata: bool = True, where: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Query documents by semantic similarity
 
@@ -260,6 +274,7 @@ def query_documents(query: str, max_results: int = 10, include_metadata: bool = 
         query: Search query string
         max_results: Maximum number of results to return
         include_metadata: Whether to include metadata in results
+        where: Optional metadata filters (e.g., {"source_type": "web_scrape"})
 
     Returns:
         Dict with query results
@@ -269,28 +284,35 @@ def query_documents(query: str, max_results: int = 10, include_metadata: bool = 
         if include_metadata:
             include.append("metadatas")
 
+        # Ensure we don't exceed available documents
+        total_docs = research_collection.count()
+        n_results = min(max_results, total_docs) if total_docs > 0 else max_results
+
         result = research_collection.query(
             query_texts=[query],
-            n_results=max_results,
-            include=include
+            n_results=n_results,
+            include=include,
+            where=where
         )
 
         results = []
-        for i, doc in enumerate(result["documents"][0]):
-            result_item = {
-                "id": result["ids"][0][i],
-                "content": doc,
-                "distance": result["distances"][0][i]
-            }
-            if include_metadata and result["metadatas"]:
-                result_item["metadata"] = result["metadatas"][0][i]
-            results.append(result_item)
+        if result["documents"] and len(result["documents"]) > 0:
+            for i, doc in enumerate(result["documents"][0]):
+                result_item = {
+                    "id": result["ids"][0][i],
+                    "content": doc,
+                    "distance": result["distances"][0][i]
+                }
+                if include_metadata and result["metadatas"] and len(result["metadatas"]) > 0:
+                    result_item["metadata"] = result["metadatas"][0][i]
+                results.append(result_item)
 
         return {
             "success": True,
             "query": query,
             "results": results,
-            "count": len(results)
+            "count": len(results),
+            "total_available": total_docs
         }
 
     except Exception as e:
@@ -306,14 +328,132 @@ def get_collection_stats() -> Dict[str, Any]:
     """
     try:
         count = research_collection.count()
+        metadata = research_collection.metadata or {}
+
         return {
             "success": True,
             "collection_name": collectionName,
             "document_count": count,
-            "status": "active"
+            "status": "active",
+            "metadata": metadata,
+            "embedding_function": "GoogleGenerativeAiEmbeddingFunction"
         }
     except Exception as e:
         return {"success": False, "error": f"Failed to get collection stats: {str(e)}"}
+
+
+def list_collections() -> Dict[str, Any]:
+    """
+    List all collections in the database
+
+    Returns:
+        Dict with list of collections
+    """
+    try:
+        collections = vectorClient.list_collections()
+        collection_info = []
+
+        for collection in collections:
+            info = {
+                "name": collection.name,
+                "id": getattr(collection, 'id', None),
+                "document_count": collection.count(),
+                "metadata": collection.metadata or {}
+            }
+            collection_info.append(info)
+
+        return {
+            "success": True,
+            "collections": collection_info,
+            "count": len(collection_info)
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Failed to list collections: {str(e)}"}
+
+
+def reset_collection() -> Dict[str, Any]:
+    """
+    Reset the research collection (delete all documents)
+
+    Returns:
+        Dict with reset status
+    """
+    try:
+        count_before = research_collection.count()
+        research_collection.delete(where={})  # Delete all documents
+
+        return {
+            "success": True,
+            "message": f"Successfully reset collection. Deleted {count_before} documents.",
+            "documents_deleted": count_before
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Failed to reset collection: {str(e)}"}
+
+
+# ========================================
+# SCRAPED CONTENT HELPER
+# ========================================
+
+def save_scraped_content(scraped_content: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Save scraped content to RAG store.
+    
+    This function takes scraped content (URL -> formatted content string),
+    splits it into chunks, and saves it to the RAG store with metadata.
+    
+    Args:
+        scraped_content: Dictionary mapping URL to formatted content string
+        
+    Returns:
+        Dict with success status and document IDs
+        
+    Example:
+        >>> scraped = {
+        ...     "https://example.com": "Article content here...",
+        ...     "https://example2.com": "More content here..."
+        ... }
+        >>> result = save_scraped_content(scraped)
+        >>> print(result["success"])
+        True
+    """
+    from datetime import datetime
+    
+    try:
+        if not scraped_content:
+            return {
+                "success": False,
+                "error": "No scraped content provided"
+            }
+        
+        documents = []
+        metadatas = []
+        
+        for url, content in scraped_content.items():
+            # Split content into chunks (max 1000 chars per chunk)
+            chunk_size = 1000
+            chunks = [content[i:i+chunk_size] for i in range(0, len(content), chunk_size)]
+            
+            for i, chunk in enumerate(chunks):
+                documents.append(chunk)
+                metadatas.append({
+                    "url": url,
+                    "chunk_index": i,
+                    "total_chunks": len(chunks),
+                    "source_type": "web_scrape",
+                    "saved_at": datetime.now().isoformat()
+                })
+        
+        # Save to RAG store
+        result = create_documents(documents=documents, metadatas=metadatas)
+        
+        return result
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to save scraped content: {str(e)}"
+        }
 
 
 # ========================================

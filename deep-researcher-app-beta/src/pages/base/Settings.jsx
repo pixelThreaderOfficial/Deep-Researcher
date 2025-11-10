@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
@@ -9,6 +9,8 @@ import { Settings as sett, Hash, Clock, Bot, MessageSquare, Cpu, Save, Brain, Fi
 
 const SettingsPage = () => {
     const [settings, setSettings] = useState({
+        userName: '',
+        selectedModel: '',
         systemPrompt: '',
         promptTemplate: 'default',
         topP: 0.9,
@@ -17,6 +19,9 @@ const SettingsPage = () => {
         thinkingEnabled: true,
         maxChatMemories: 5
     })
+
+    const [availableModels, setAvailableModels] = useState([])
+    const [modelsLoading, setModelsLoading] = useState(true)
 
     const [editingMemoryId, setEditingMemoryId] = useState(null)
     const [editingContent, setEditingContent] = useState('')
@@ -30,6 +35,53 @@ const SettingsPage = () => {
         }))
     )
 
+    // Fetch available models from API
+    useEffect(() => {
+        const fetchModels = async () => {
+            try {
+                const response = await fetch('http://localhost:8000/models')
+                const data = await response.json()
+
+                if (data.success && data.models) {
+                    // Filter models that support text input and output
+                    const textModels = data.models.filter(model => {
+                        const inputTypes = model[4] || []
+                        const outputTypes = model[5] || []
+                        return inputTypes.includes('text') && outputTypes.includes('text')
+                    })
+
+                    // Transform to the expected format for StyledDropdown
+                    const formattedModels = textModels.map(model => ({
+                        value: model[3], // model ID
+                        name: model[0], // model name
+                        description: `${model[1]} (${model[2]})` // provider (type)
+                    }))
+
+                    setAvailableModels(formattedModels)
+
+                    // Set default selected model if none is selected and models are available
+                    if (formattedModels.length > 0) {
+                        setSettings(prev => ({
+                            ...prev,
+                            selectedModel: prev.selectedModel || formattedModels[0].value
+                        }))
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to fetch models:', error)
+                // Fallback to some default models if API fails
+                setAvailableModels([
+                    { value: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', description: 'Google (online)' },
+                    { value: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', description: 'Google (cloud)' }
+                ])
+            } finally {
+                setModelsLoading(false)
+            }
+        }
+
+        fetchModels()
+    }, []) // Empty dependency array since we only want to fetch once on mount
+
     const promptTemplates = [
         { value: 'default', name: 'Default', description: 'Standard prompt template' },
         { value: 'creative', name: 'Creative', description: 'Encourages creative responses' },
@@ -40,10 +92,7 @@ const SettingsPage = () => {
 
     const documentAnalysisModes = [
         { value: 'off', name: 'Off', description: 'Disable document analysis' },
-        { value: 'auto', name: 'Auto', description: 'Automatically detect content type' },
-        { value: 'text', name: 'Text Only', description: 'Process as plain text' },
-        { value: 'structured', name: 'Structured', description: 'Extract structured data' },
-        { value: 'visual', name: 'Visual', description: 'Analyze images and diagrams' }
+        { value: 'auto', name: 'Auto', description: 'Automatically detect content type' }
     ]
 
     const updateSetting = (key, value) => {
@@ -136,12 +185,60 @@ const SettingsPage = () => {
                     </div>
                 </motion.div>
 
+                {/* User & Model Settings */}
+                <motion.div
+                    className="grid grid-cols-1 md:grid-cols-2 gap-6"
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.3, delay: 0.3 }}
+                >
+                    {/* User's Name */}
+                    <div className="space-y-3">
+                        <div className="flex items-center gap-2">
+                            <motion.div whileHover={{ scale: 1.1 }} className="w-2 h-2 bg-green-500 rounded-full" />
+                            <Label className="text-base font-semibold text-white flex items-center gap-2">
+                                <Bot className="w-4 h-4" />
+                                User's Name
+                            </Label>
+                        </div>
+                        <Input
+                            type="text"
+                            value={settings.userName}
+                            onChange={(e) => updateSetting('userName', e.target.value)}
+                            placeholder="Enter your name..."
+                            className="bg-gray-800 border-gray-600 text-gray-100 focus:border-blue-500"
+                        />
+                    </div>
+
+                    {/* Model Selection */}
+                    <div className="space-y-3">
+                        <div className="flex items-center gap-2">
+                            <motion.div whileHover={{ scale: 1.1 }} className="w-2 h-2 bg-purple-500 rounded-full" />
+                            <Label className="text-base font-semibold text-white flex items-center gap-2">
+                                <Brain className="w-4 h-4" />
+                                AI Model
+                            </Label>
+                        </div>
+                        <StyledDropdown
+                            value={settings.selectedModel}
+                            onValueChange={(value) => updateSetting('selectedModel', value)}
+                            options={availableModels}
+                            placeholder={modelsLoading ? "Loading models..." : "Select Model"}
+                            width="w-full"
+                            disabled={modelsLoading}
+                        />
+                        {modelsLoading && (
+                            <p className="text-xs text-gray-400 mt-1">Fetching available models...</p>
+                        )}
+                    </div>
+                </motion.div>
+
                 {/* AI Parameters */}
                 <motion.div
                     className="grid grid-cols-1 md:grid-cols-3 gap-6"
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.3, delay: 0.3 }}
+                    transition={{ duration: 0.3, delay: 0.4 }}
                 >
                     {/* Prompt Template */}
                     <div className="space-y-3">
@@ -219,7 +316,7 @@ const SettingsPage = () => {
                     className="grid grid-cols-1 md:grid-cols-2 gap-6"
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.3, delay: 0.4 }}
+                    transition={{ duration: 0.3, delay: 0.5 }}
                 >
                     {/* Document Analysis Mode */}
                     <div className="space-y-3">
@@ -268,7 +365,7 @@ const SettingsPage = () => {
                     className="space-y-4"
                     initial={{ opacity: 0, x: 20 }}
                     animate={{ opacity: 1, x: 0 }}
-                    transition={{ duration: 0.3, delay: 0.5 }}
+                    transition={{ duration: 0.3, delay: 0.6 }}
                 >
                     <div className="flex items-center gap-2">
                         <motion.div whileHover={{ scale: 1.1 }} className="w-2 h-2 bg-pink-500 rounded-full" />

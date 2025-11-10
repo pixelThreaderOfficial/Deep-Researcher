@@ -23,7 +23,7 @@ const App = () => {
         <Route path="files" element={<Files />} />
         <Route path="files/:category" element={<FileView />} />
         <Route path="researches" element={<Researches />} />
-        <Route path="research/:id" element={<Research />} />
+        <Route path="research/:slug" element={<Research />} />
         <Route path="settings" element={<SettingsPage />}>
           <Route path="models" element={<AllModels />}>
             <Route path="manage" element={<ManageModels />} />
