@@ -1,0 +1,2 @@
+deep-researcher-backend-beta/database/chat_history.db
+deep-researcher-backend-beta/gemini/rag_store/rag_vector_db/chroma.sqlite3
