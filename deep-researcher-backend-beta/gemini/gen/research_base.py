@@ -485,15 +485,45 @@ async def research_agent_stream(
         "sub_questions": [],  # List of generated sub-questions
         "rag_results": [],
     }
+    # Predefine variables to satisfy static analyzers and ensure availability
+    full_answer: str = ""
+    saved_videos: List[Dict[str, Any]] = []
+    news_results: List[Dict[str, Any]] = []
+    transcript_save: Optional[Dict[str, Any]] = None
+    references: List[Dict[str, Any]] = []
+    research_time: float = 0.0
 
-    # Initialize session and analyze query needs
+    # Initialize DB research session
     research_slug = None
+    try:
+        research_slug = chat_db.create_research_session(
+            query=query,
+            model=validate_model_name(model),
+            tags=None,
+        )
+    except Exception as e:
+        # Non-fatal; proceed with research even if DB create fails
+        print(f"Failed to create research session: {e}")
     # Safety check: block sexual content
     try:
         if check_sexual_content(query):
+            # Mark session as failed due to safety violation
+            if research_slug:
+                try:
+                    chat_db.update_research_status(
+                        slug=research_slug,
+                        status="failed",
+                        duration=time.time() - start_time,
+                        answer=None,
+                        resources_used=[],
+                        metadata={"error": "sexual_content_detected"},
+                    )
+                except Exception as _upd_err:
+                    print(f"Failed to update research status (safety): {_upd_err}")
             yield {
                 "type": "error",
                 "message": "This query appears to contain sexual content that can't be processed.",
+                "research_slug": research_slug,
             }
             return
     except Exception:
@@ -525,9 +555,23 @@ async def research_agent_stream(
     research_metadata["web_search_results"] = web_results
 
     if not web_results:
+        # Update failed status for no results
+        if research_slug:
+            try:
+                chat_db.update_research_status(
+                    slug=research_slug,
+                    status="failed",
+                    duration=time.time() - start_time,
+                    answer=None,
+                    resources_used=[],
+                    metadata={"error": "no_web_results"},
+                )
+            except Exception as _upd_err:
+                print(f"Failed to update research status (no results): {_upd_err}")
         yield {
             "type": "error",
             "message": "No relevant information found. Please try rephrasing your query.",
+            "research_slug": research_slug,
         }
         return
 
@@ -643,9 +687,28 @@ async def research_agent_stream(
         if not relevant_info_found:
             # Check query clarity only if we have no content at all
             if not is_clear:
+                # Update failed due to unclear query
+                if research_slug:
+                    try:
+                        ref_links: List[str] = []
+                        for r in web_results:
+                            href = r.get("href")
+                            if isinstance(href, str) and href:
+                                ref_links.append(href)
+                        chat_db.update_research_status(
+                            slug=research_slug,
+                            status="failed",
+                            duration=time.time() - start_time,
+                            answer=None,
+                            resources_used=ref_links,
+                            metadata={"error": "unclear_query"},
+                        )
+                    except Exception as _upd_err:
+                        print(f"Failed to update research status (unclear): {_upd_err}")
                 yield {
                     "type": "error",
                     "message": "I'm not sure what you mean. Please try again with a more specific query.",
+                    "research_slug": research_slug,
                 }
                 return
 
@@ -1007,6 +1070,16 @@ IMPORTANT: Follow this structure EXACTLY. Do not skip any sections. In the Sourc
         all_resources = []
         all_resources.extend(research_metadata["sources"])
         all_resources.extend([img["url"] for img in research_metadata["images"]])
+        # Add raw web search URLs as references as well
+        try:
+            ref_links2: List[str] = []
+            for r in research_metadata.get("web_search_results", []):
+                href = r.get("href") if isinstance(r, dict) else None
+                if isinstance(href, str) and href:
+                    ref_links2.append(href)
+            all_resources.extend(ref_links2)
+        except Exception:
+            pass
 
         # Add YouTube video URLs
         if research_metadata.get("youtube") and isinstance(
@@ -1100,7 +1173,7 @@ IMPORTANT: Follow this structure EXACTLY. Do not skip any sections. In the Sourc
                     }
                 )
 
-        yield {
+    yield {
             "type": "result",
             "data": {
                 "answer": full_answer,
@@ -1111,7 +1184,7 @@ IMPORTANT: Follow this structure EXACTLY. Do not skip any sections. In the Sourc
                 "youtube": research_metadata["youtube"],
                 "news": research_metadata["news"],
                 "rag_results": research_metadata["rag_results"],
-                "research_slug": research_slug,  # Include slug in response
+        "research_slug": research_slug,  # Include slug in response
                 "metadata": {
                     "research_time": research_time,
                     "sources_count": len(research_metadata["sources"]),
