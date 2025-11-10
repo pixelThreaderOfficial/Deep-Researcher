@@ -694,14 +694,14 @@ def image_search(
     # print(json.dumps(web_results, indent=2))
 
 # Example news search
-news_results = news_search(
-    'artificial intelligence',
-    region='us-en',
-    timelimit='w',
-    max_results=5
-)
-print("\nNews Search Results:")
-print(json.dumps(news_results, indent=2))
+# news_results = news_search(
+#     'artificial intelligence',
+#     region='us-en',
+#     timelimit='w',
+#     max_results=5
+# )
+# print("\nNews Search Results:")
+# print(json.dumps(news_results, indent=2))
 
     # # Example image search
     # image_results = image_search(

@@ -379,6 +379,62 @@ def save_youtube_videos_to_bucket(videos: List[Dict], query: str) -> Dict[str, A
 
 
 # ========================================
+# NEWS NORMALIZATION HELPER
+# ========================================
+
+from urllib.parse import urlparse
+
+
+def _normalize_news_results(raw_news: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Normalize DDGS news results to a consistent schema and dedupe by domain.
+
+    Expected keys per item after normalization:
+      - date, title, body, url, image, source, domain
+
+    Returns up to 5 unique sources (by domain), preserving order.
+    """
+    normalized: List[Dict[str, Any]] = []
+    seen_domains = set()
+
+    for item in raw_news or []:
+        try:
+            title = str(item.get("title", "")).strip()
+            body = str(item.get("body", "")).strip()
+            url = str(item.get("url", "")).strip()
+            image = item.get("image")
+            date = str(item.get("date", "")).strip()
+            source = str(item.get("source", "")).strip()
+
+            if not url or not url.lower().startswith("http"):
+                continue
+
+            domain = urlparse(url).netloc.lower()
+            if not domain or domain in seen_domains:
+                continue
+
+            seen_domains.add(domain)
+            normalized.append(
+                {
+                    "date": date,
+                    "title": title,
+                    "body": body,
+                    "url": url,
+                    "image": image,
+                    "source": source or domain,
+                    "domain": domain,
+                }
+            )
+
+            if len(normalized) >= 5:
+                break
+        except Exception:
+            # Skip malformed items
+            continue
+
+    return normalized
+
+
+# ========================================
 # YOUTUBE SEARCH PARSING HELPER
 # ========================================
 
@@ -743,21 +799,38 @@ async def research_agent_stream(
 
             research_metadata["images"] = saved_images
 
-        # Step 9: Optional news search
-        # Initialize to avoid UnboundLocalError when not searching news
+        # Step 9: News search (always on)
         saved_news = []
         news_results: List[Dict[str, Any]] = []
-        if needs_news:
-            if progress_callback:
-                await progress_callback(
+        if progress_callback:
+            await progress_callback(
+                {
+                    "type": "progress",
+                    "stage": "news_search",
+                    "message": "Searching recent news sources...",
+                }
+            )
+
+        try:
+            raw_news = news_search(
+                f"{query}",
+                region="in",
+                timelimit="w",
+                max_results=5,
+            ) or []
+
+            # Map directly to expected keys; keep full body for LLM context
+            for item in raw_news:
+                news_results.append(
                     {
-                        "type": "progress",
-                        "stage": "news_search",
-                        "message": "Searching for recent news...",
+                        "date": item.get("date"),
+                        "title": item.get("title", "Untitled"),
+                        "body": item.get("body", ""),
+                        "url": item.get("url", ""),
+                        "image": item.get("image"),
+                        "source": item.get("source", "Unknown"),
                     }
                 )
-
-            news_results = news_search(query, max_results=5)
 
             if news_results:
                 save_result = save_news_to_bucket(news_results, query)
@@ -768,6 +841,14 @@ async def research_agent_stream(
                         "file_id": save_result.get("file_id"),
                         "items": news_results,
                     }
+                else:
+                    research_metadata["news"] = {
+                        "error": save_result.get("error"),
+                        "items": news_results,
+                    }
+        except Exception as e:
+            print(f"Error during news search: {e}")
+            research_metadata["news"] = {"error": str(e), "items": []}
 
         # Step 9.5: YouTube video search (always search for videos)
         if progress_callback:
@@ -922,33 +1003,57 @@ async def research_agent_stream(
                         f"   Description: {video.get('description', '')[:200]}...\n"
                     )
 
-        # Prepare news context
+        # Prepare news context with proper citation (title — source (date) + URL) and include full body
         news_context = ""
         if news_results:
-            news_context = "\n\nRecent News:\n"
+            news_context = "\n\nRecent News (last 7 days):\n"
             for i, news_item in enumerate(news_results[:5], 1):
-                news_context += f"{i}. {news_item.get('title', 'Untitled')}\n"
-                news_context += f"   Source: {news_item.get('source', 'Unknown')}\n"
+                title_n = news_item.get("title", "Untitled")
+                source_n = news_item.get("source", "Unknown")
+                date_n = news_item.get("date", "")
+                url_n = news_item.get("url", "")
+                body_n = news_item.get("body", "")
+                news_context += f"{i}. {title_n} — {source_n}{f' ({date_n})' if date_n else ''}\n"
+                if body_n:
+                    news_context += f"   {body_n}\n"
+                if url_n:
+                    news_context += f"   Source: {url_n}\n"
 
         # Prepare sources/references context for explicit links
         sources_context = ""
-        all_source_urls = []
+        web_source_urls: List[str] = []
+        news_source_urls: List[str] = []
 
-        # Collect web sources
+        # Collect scraped web sources
         if research_metadata["sources"]:
-            all_source_urls.extend(research_metadata["sources"])
+            web_source_urls.extend(research_metadata["sources"])
 
-        # Build sources list
-        if all_source_urls:
-            sources_context = "\n\nWeb Sources:\n"
-            for i, url in enumerate(all_source_urls, 1):
+        # Collect news sources
+        if news_results:
+            news_source_urls.extend([n.get("url", "") for n in news_results if n.get("url")])
+
+        # Build sources list sections
+        if web_source_urls:
+            sources_context += "\n\nWeb Sources:\n"
+            for i, url in enumerate(web_source_urls, 1):
                 # Try to get title from web_results if available
                 source_title = f"Source {i}"
                 for web_result in web_results:
-                    if web_result.get("href") == url:
+                    href = web_result.get("href") or web_result.get("url")
+                    if href == url:
                         source_title = web_result.get("title", source_title)
                         break
                 sources_context += f"{i}. {source_title}\n   {url}\n"
+
+        if news_source_urls:
+            sources_context += "\nNews Sources:\n"
+            for j, url in enumerate(news_source_urls, 1):
+                # Try to get matching news title
+                match = next((n for n in news_results if n.get("url") == url), None)
+                title = (match or {}).get("title", f"News {j}")
+                source = (match or {}).get("source", "")
+                label = f"{title} — {source}" if source else title
+                sources_context += f"{j}. {label}\n   {url}\n"
 
         # Generate final answer prompt with structured format
         final_prompt = f"""You are a professional deep researcher. Generate a comprehensive research report in the following EXACT structure:
@@ -985,8 +1090,8 @@ Reference sources naturally in your text like: "According to [source]..." or "Re
 {chr(10).join([f"{i+1}. **{n.get('title', 'Untitled')}** - {n.get('source', 'Unknown')}" + chr(10) + f"   {n.get('body', '')[:150]}..." for i, n in enumerate(news_results[:5])]) if news_results else ""}
 
 ## Sources & References
-List all web sources used in this research:
-{chr(10).join([f"[{i+1}] {url}" for i, url in enumerate(all_source_urls)]) if all_source_urls else "No web sources were scraped for this research."}
+List all web and news sources used in this research:
+{chr(10).join([f"[{i+1}] {url}" for i, url in enumerate(web_source_urls + news_source_urls)]) if (web_source_urls or news_source_urls) else "No sources were collected for this research."}
 
 ## Conclusion
 Provide a strong conclusion that:
@@ -1159,17 +1264,21 @@ IMPORTANT: Follow this structure EXACTLY. Do not skip any sections. In the Sourc
                 }
             )
 
-        # Add news references
+        # Add news references (normalized)
         if news_results:
             for news_item in news_results:
+                url_n = news_item.get("url", "")
+                if not url_n:
+                    continue
                 references.append(
                     {
                         "id": len(references) + 1,
-                        "url": news_item.get("url", ""),
+                        "url": url_n,
                         "title": news_item.get("title", ""),
                         "type": "news",
                         "source": news_item.get("source", ""),
                         "date": news_item.get("date", ""),
+                        "image": news_item.get("image"),
                     }
                 )
 

@@ -225,8 +225,8 @@ const Research = () => {
         {/* Metadata summary */}
         {research?.metadata && (
           <div className="mt-6 text-sm text-gray-400">
-            <div>Web results: {research.metadata.web_search_results_count ?? 0}</div>
-            <div>RAG results: {research.metadata.rag_results_count ?? 0}</div>
+            <div className='hidden'>Web results: {research.metadata.web_search_results_count ?? 0}</div>
+            <div className='hidden' >RAG results: {research.metadata.rag_results_count ?? 0}</div>
           </div>
         )}
       </motion.div>
