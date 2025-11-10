@@ -20,6 +20,7 @@ dependencies = [
     "py-youtube>=1.1.7",
     "pypandoc>=1.15",
     "python-dotenv>=1.1.1",
+    "python-multipart>=0.0.20",
     "uvicorn>=0.37.0",
     "youtube-transcript-api>=1.2.3",
 ]
