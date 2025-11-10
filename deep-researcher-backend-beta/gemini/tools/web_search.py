@@ -681,17 +681,17 @@ def image_search(
     )
 
 
-if __name__ == "__main__":
+# if __name__ == "__main__":
     # Example web search
-    web_results = web_search(
-        'python programming filetype:pdf',
-        region='us-en',
-        safesearch='off',
-        timelimit='y',
-        max_results=5
-    )
-    print("Web Search Results:")
-    print(json.dumps(web_results, indent=2))
+    # web_results = web_search(
+    #     'python programming filetype:pdf',
+    #     region='us-en',
+    #     safesearch='off',
+    #     timelimit='y',
+    #     max_results=5
+    # )
+    # print("Web Search Results:")
+    # print(json.dumps(web_results, indent=2))
 
     # # Example news search
     # news_results = news_search(

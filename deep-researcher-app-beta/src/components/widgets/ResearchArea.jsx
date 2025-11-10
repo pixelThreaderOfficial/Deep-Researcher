@@ -238,6 +238,44 @@ const ResearchArea = ({
         return null
     }, [stableView])
 
+    // Helpers
+    const getYouTubeId = (url) => {
+        if (!url || typeof url !== 'string') return null
+        try {
+            const u = new URL(url)
+            // youtu.be/<id>
+            if (u.hostname.includes('youtu.be')) {
+                const id = u.pathname.split('/').filter(Boolean)[0]
+                return id || null
+            }
+            // youtube.com/watch?v=<id>
+            if (u.searchParams.has('v')) return u.searchParams.get('v')
+            // youtube.com/embed/<id>
+            if (u.pathname.includes('/embed/')) {
+                const parts = u.pathname.split('/embed/')
+                if (parts[1]) return parts[1].split(/[?&]/)[0]
+            }
+            return null
+        } catch {
+            return null
+        }
+    }
+
+    const buildEmbedUrl = (url) => {
+        const id = getYouTubeId(url)
+        if (!id) return null
+        return `https://www.youtube-nocookie.com/embed/${id}`
+    }
+
+    const getReferenceGroups = (references) => {
+        const refs = Array.isArray(references) ? references : []
+        return {
+            web: refs.filter(r => r?.type === 'web'),
+            youtube: refs.filter(r => r?.type === 'youtube'),
+            news: refs.filter(r => r?.type === 'news')
+        }
+    }
+
     return (
         <div className="flex-1 min-h-0 flex flex-col relative">
             {/* Floating research status (bottom-center above composer) */}
@@ -355,6 +393,123 @@ const ResearchArea = ({
                                                 {m.content || ''}
                                             </ThinkingMarkdown>
                                         </div>
+                                    )}
+
+                                    {/* YouTube embedded videos for this research (only on the latest assistant message) */}
+                                    {m.id === lastAssistantId && (
+                                        (() => {
+                                            const ytVideos = researchMetadata?.youtube?.videos
+                                                ? researchMetadata.youtube.videos
+                                                : []
+                                            const refGroups = getReferenceGroups(researchMetadata?.references)
+                                            const refYt = refGroups.youtube || []
+                                            // Prefer structured youtube.videos; fallback to youtube refs
+                                            const videosToShow = Array.isArray(ytVideos) && ytVideos.length > 0
+                                                ? ytVideos
+                                                : refYt.map(v => ({ url: v.url, title: v.title, channel: v.channel, thumbnail: v.thumbnail }))
+
+                                            if (!videosToShow || videosToShow.length === 0) return null
+
+                                            return (
+                                                <div className="mt-4">
+                                                    <div className="text-sm font-semibold text-gray-200 mb-2">Video Resources</div>
+                                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                                        {videosToShow.slice(0, 2).map((video, idx) => {
+                                                            const embed = buildEmbedUrl(video.url)
+                                                            if (!embed) return null
+                                                            return (
+                                                                <div key={idx} className="bg-gray-900/70 border border-gray-700 rounded-xl overflow-hidden">
+                                                                    <div className="aspect-video w-full bg-black">
+                                                                        <iframe
+                                                                            src={embed}
+                                                                            title={video.title || `YouTube video ${idx + 1}`}
+                                                                            className="w-full h-full"
+                                                                            frameBorder="0"
+                                                                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                                                                            allowFullScreen
+                                                                        />
+                                                                    </div>
+                                                                    {(video.title || video.channel) && (
+                                                                        <div className="px-3 py-2 border-t border-gray-700">
+                                                                            {video.title && <div className="text-sm text-gray-100 line-clamp-2">{video.title}</div>}
+                                                                            {video.channel && <div className="text-xs text-gray-400">by {video.channel}</div>}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            )
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            )
+                                        })()
+                                    )}
+
+                                    {/* Sources / References list (web + news + fallback 'sources') */}
+                                    {m.id === lastAssistantId && (
+                                        (() => {
+                                            const hasStructuredRefs = Array.isArray(researchMetadata?.references) && researchMetadata.references.length > 0
+                                            const refGroups = hasStructuredRefs ? getReferenceGroups(researchMetadata.references) : { web: [], news: [], youtube: [] }
+                                            const hasWeb = (refGroups.web?.length || 0) > 0
+                                            const hasNews = (refGroups.news?.length || 0) > 0
+                                            const hasFallbackSources = Array.isArray(researchSources) && researchSources.length > 0
+
+                                            if (!hasWeb && !hasNews && !hasFallbackSources) return null
+
+                                            return (
+                                                <div className="mt-4">
+                                                    <div className="text-sm font-semibold text-gray-200 mb-2">Sources</div>
+                                                    <div className="space-y-3">
+                                                        {hasWeb && (
+                                                            <div className="bg-gray-900/70 border border-gray-700 rounded-xl p-3">
+                                                                <div className="text-xs uppercase tracking-wide text-gray-400 mb-2">Web</div>
+                                                                <ul className="space-y-2 list-decimal pl-5">
+                                                                    {refGroups.web.map((ref) => (
+                                                                        <li key={`web-${ref.id || ref.url}`} className="text-sm">
+                                                                            <a href={ref.url} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 break-words">
+                                                                                {ref.title || ref.url}
+                                                                            </a>
+                                                                            {ref.snippet && (
+                                                                                <div className="text-xs text-gray-400 mt-1">{ref.snippet}</div>
+                                                                            )}
+                                                                        </li>
+                                                                    ))}
+                                                                </ul>
+                                                            </div>
+                                                        )}
+                                                        {hasNews && (
+                                                            <div className="bg-gray-900/70 border border-gray-700 rounded-xl p-3">
+                                                                <div className="text-xs uppercase tracking-wide text-gray-400 mb-2">News</div>
+                                                                <ul className="space-y-2 list-decimal pl-5">
+                                                                    {refGroups.news.map((ref) => (
+                                                                        <li key={`news-${ref.id || ref.url}`} className="text-sm">
+                                                                            <a href={ref.url} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 break-words">
+                                                                                {ref.title || ref.url}
+                                                                            </a>
+                                                                            <div className="text-xs text-gray-400 mt-1">
+                                                                                {(ref.source ? `${ref.source}` : '')}{ref.source && ref.date ? ' • ' : ''}{ref.date || ''}
+                                                                            </div>
+                                                                        </li>
+                                                                    ))}
+                                                                </ul>
+                                                            </div>
+                                                        )}
+                                                        {!hasStructuredRefs && hasFallbackSources && (
+                                                            <div className="bg-gray-900/70 border border-gray-700 rounded-xl p-3">
+                                                                <ul className="space-y-2 list-decimal pl-5">
+                                                                    {researchSources.map((url, idx) => (
+                                                                        <li key={`src-${idx}`} className="text-sm">
+                                                                            <a href={url} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 break-words">
+                                                                                {url}
+                                                                            </a>
+                                                                        </li>
+                                                                    ))}
+                                                                </ul>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            )
+                                        })()
                                     )}
                                     {/* Assistant actions */}
                                     <div className="mt-2 flex flex-wrap gap-2 text-xs">

@@ -661,3 +661,137 @@ def delete_chat_settings(chat_id: str):
 # @app.post("/api/v0/rag/query_documents")
 # def query_documents(query: str = Form(...)):
 #     pass
+
+
+# ========================================
+# RESEARCH SESSION MANAGEMENT API
+# ========================================
+
+
+@app.get("/api/research/sessions")
+def get_research_sessions(
+    limit: int = 50, offset: int = 0, status: Optional[str] = None
+):
+    """
+    Get all research sessions with pagination and optional status filtering
+
+    Args:
+        limit: Maximum number of results (default: 50)
+        offset: Number of results to skip (default: 0)
+        status: Filter by status - 'running', 'completed', or 'failed' (optional)
+
+    Returns:
+        List of research sessions with metadata
+    """
+    try:
+        researches = chat_db.get_all_researches(
+            limit=limit, offset=offset, status=status
+        )
+        return {
+            "success": True,
+            "researches": researches,
+            "count": len(researches),
+            "limit": limit,
+            "offset": offset,
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/research/sessions/{slug}")
+def get_research_session(slug: str):
+    """
+    Get a specific research session by its slug
+
+    Args:
+        slug: Research session UUID
+
+    Returns:
+        Research session details including query, answer, resources, and metadata
+    """
+    try:
+        research = chat_db.get_research_by_slug(slug)
+        if research:
+            return {"success": True, "research": research}
+        else:
+            return {"success": False, "error": "Research session not found"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/research/sessions/{slug}")
+def delete_research_session(slug: str):
+    """
+    Delete a research session by its slug
+
+    Args:
+        slug: Research session UUID
+
+    Returns:
+        Success status
+    """
+    try:
+        deleted = chat_db.delete_research(slug)
+        if deleted:
+            return {"success": True, "message": "Research session deleted successfully"}
+        else:
+            return {"success": False, "error": "Research session not found"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/research/stats")
+def get_research_statistics():
+    """
+    Get statistics about all research sessions
+
+    Returns:
+        Statistics including total, completed, failed, running counts,
+        average duration, and unique models used
+    """
+    try:
+        stats = chat_db.get_research_stats()
+        return {"success": True, "stats": stats}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/research/search")
+def search_research_sessions(q: str, limit: int = 50):
+    """
+    Search research sessions by query, title, or answer content
+
+    Args:
+        q: Search query string
+        limit: Maximum number of results (default: 50)
+
+    Returns:
+        List of matching research sessions
+    """
+    try:
+        results = chat_db.search_researches(query=q, limit=limit)
+        return {"success": True, "results": results, "count": len(results), "query": q}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.put("/api/research/sessions/{slug}/title")
+def update_research_title(slug: str, title: str):
+    """
+    Update the title of a research session
+
+    Args:
+        slug: Research session UUID
+        title: New title for the research
+
+    Returns:
+        Success status
+    """
+    try:
+        updated = chat_db.update_research_title(slug=slug, title=title)
+        if updated:
+            return {"success": True, "message": "Research title updated successfully"}
+        else:
+            return {"success": False, "error": "Research session not found"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}

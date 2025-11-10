@@ -23,9 +23,14 @@ from dotenv import load_dotenv
 
 from gemini.tools.web_search import (
     web_search,
-    _scrape_urls_async,
+    scrape_urls,
     image_search,
     news_search,
+)
+from gemini.tools.youtube_Search import (
+    youtube_search,
+    get_video_data,
+    get_video_transcript,
 )
 from gemini.rag_store.rag_stores import (
     create_documents,
@@ -33,6 +38,7 @@ from gemini.rag_store.rag_stores import (
     save_scraped_content,
 )
 from bucket.stores import store_generated_content, init_bucket_system
+from gemini.sqlite_crud import chat_db
 
 load_dotenv()
 
@@ -175,6 +181,52 @@ Respond with ONLY a JSON object in this exact format:
         return {"needs_images": False, "needs_news": False, "is_clear": True}
 
 
+def generate_sub_questions(query: str) -> List[str]:
+    """
+    Generate relevant sub-questions based on the user's query for comprehensive research.
+
+    Args:
+        query: User's main query
+
+    Returns:
+        List of 3-5 relevant sub-questions
+    """
+    try:
+        sub_questions_prompt = f"""Based on the following user query, generate 3-5 relevant sub-questions that would help provide a comprehensive answer.
+
+User Query: {query}
+
+Generate sub-questions that:
+1. Break down the main topic into specific aspects
+2. Cover different angles of the topic
+3. Help gather complete information
+4. Are clear and specific
+
+Respond with ONLY a JSON array of questions:
+["question 1", "question 2", "question 3", ...]"""
+
+        response = client.models.generate_content(
+            model=DEFAULT_MODEL,
+            contents=[sub_questions_prompt],
+        )
+
+        resp_text = getattr(response, "text", None)
+        result_text = (resp_text or "").strip()
+
+        # Extract JSON array from response
+        if "[" in result_text:
+            json_start = result_text.find("[")
+            json_end = result_text.rfind("]") + 1
+            result_text = result_text[json_start:json_end]
+
+        sub_questions = json.loads(result_text)
+        return sub_questions[:5]  # Limit to 5 questions
+
+    except Exception as e:
+        print(f"Error generating sub-questions: {e}")
+        return []
+
+
 # Note: save_scraped_content is imported from gemini.rag_store.rag_stores
 
 
@@ -282,6 +334,125 @@ def save_news_to_bucket(news_items: List[Dict], query: str) -> Dict[str, Any]:
 
 
 # ========================================
+# YOUTUBE STORAGE HELPER
+# ========================================
+
+
+def save_youtube_videos_to_bucket(videos: List[Dict], query: str) -> Dict[str, Any]:
+    """
+    Save YouTube video data to bucket as JSON file with timestamp and SHA256 hash.
+
+    Args:
+        videos: List of video dictionaries with metadata
+        query: Original query for metadata
+
+    Returns:
+        Dict with file_id, file_url, stored_filename
+    """
+    try:
+        # Convert videos to JSON
+        videos_json = json.dumps(videos, indent=2, ensure_ascii=False)
+        videos_bytes = videos_json.encode("utf-8")
+
+        # Generate filename with timestamp and SHA256 hash
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        content_hash = hashlib.sha256(videos_bytes).hexdigest()[:16]
+        filename = f"youtube_{timestamp}_{content_hash}.json"
+
+        # Save to bucket
+        result = store_generated_content(
+            content=videos_bytes,
+            filename=filename,
+            content_type="docs",
+            metadata={
+                "type": "youtube_videos",
+                "query": query,
+                "video_count": len(videos),
+                "saved_at": datetime.now().isoformat(),
+            },
+        )
+
+        return result
+
+    except Exception as e:
+        return {"success": False, "error": f"Failed to save YouTube videos: {str(e)}"}
+
+
+# ========================================
+# YOUTUBE SEARCH PARSING HELPER
+# ========================================
+
+import re
+
+
+def _parse_simple_youtube_data(simple_data: str) -> Dict[str, str]:
+    """Parse the simple_data string returned by py_youtube Search().
+
+    Heuristics extract channel, views, duration.
+    The format is inconsistent so we best-effort with regex.
+
+    Examples:
+        "BMW M 1000 XR REVIEW | Executive Lunacy 18 minutes"
+        "Kerala's most expensive ... by ambro 46 302,369 views 6 months ago 55 seconds – play Short"
+
+    Returns:
+        {"channel": str, "views": str, "duration": str, "published": str}
+    """
+    channel = ""
+    views = ""
+    duration = ""
+    published = ""
+
+    # Duration patterns
+    duration_patterns = re.findall(
+        r"(\d+\s+hours?(?:,\s+\d+\s+minutes?)?|\d+\s+minutes?(?:,\s+\d+\s+seconds?)?|\d+\s+seconds?)",
+        simple_data,
+    )
+    if duration_patterns:
+        duration = duration_patterns[-1]  # take the last occurrence
+
+    # Views pattern
+    m_views = re.search(r"([0-9,.]+)\s+views", simple_data)
+    if m_views:
+        views = m_views.group(1)
+
+    # Channel extraction: look for ' by ' then capture until views or duration or end
+    if " by " in simple_data:
+        after_by = simple_data.split(" by ", 1)[1].strip()
+        # remove leading possible counts like 'ambro 46' -> channel 'ambro'
+        # If views match, truncate before it
+        cut_pos = len(after_by)
+        if m_views:
+            pos = after_by.find(m_views.group(0))
+            if pos != -1:
+                cut_pos = pos
+        # If duration appears earlier than views
+        if duration:
+            m_duration = re.search(re.escape(duration), after_by)
+            if m_duration and m_duration.start() < cut_pos:
+                cut_pos = m_duration.start()
+        channel_raw = after_by[:cut_pos].strip()
+        # Heuristic: channel name seldom contains digits at end; trim trailing digits
+        channel = re.sub(r"\s*\d.*$", "", channel_raw).strip()
+        # If still too long (contains 'views'), clean again
+        channel = channel.replace("views", "").strip()
+
+    # Published time heuristic: look for patterns like 'months ago', 'days ago'
+    m_pub = re.search(
+        r"(\d+\s+(?:days|day|weeks|week|months|month|years|year)\s+ago)", simple_data
+    )
+    if m_pub:
+        published = m_pub.group(1)
+
+    return {
+        "channel": channel,
+        "views": views,
+        "duration": duration,
+        "published": published,
+    }
+
+
+# ========================================
 # MAIN RESEARCH AGENT
 # ========================================
 
@@ -310,91 +481,95 @@ async def research_agent_stream(
         "images": [],
         # Will hold either {} or {file_url, file_id, items}
         "news": {},
+        "youtube": {},  # Will hold {file_url, file_id, videos}
+        "sub_questions": [],  # List of generated sub-questions
         "rag_results": [],
-        "web_search_results": [],
     }
 
+    # Initialize session and analyze query needs
+    research_slug = None
+    # Safety check: block sexual content
     try:
-        # Step 1: Check sexual content
-        if progress_callback:
-            await progress_callback(
-                {
-                    "type": "progress",
-                    "stage": "analyzing",
-                    "message": "Checking content safety...",
-                }
-            )
-
         if check_sexual_content(query):
-            yield {"type": "error", "message": "Sorry, I can't help with that."}
-            return
-
-        # Step 2: Analyze query needs
-        if progress_callback:
-            await progress_callback(
-                {
-                    "type": "progress",
-                    "stage": "analyzing",
-                    "message": "Analyzing query requirements...",
-                }
-            )
-
-        query_analysis = analyze_query_needs(query)
-        needs_images = query_analysis.get("needs_images", False)
-        needs_news = query_analysis.get("needs_news", False)
-        is_clear = query_analysis.get("is_clear", True)
-
-        # Step 3: Web search
-        if progress_callback:
-            await progress_callback(
-                {
-                    "type": "progress",
-                    "stage": "searching",
-                    "message": "Searching web for relevant information...",
-                }
-            )
-
-        web_results = web_search(
-            query, region="us-en", safesearch="on", timelimit="y", max_results=10
-        )
-        research_metadata["web_search_results"] = web_results
-
-        if not web_results:
             yield {
                 "type": "error",
-                "message": "No relevant information found. Please try rephrasing your query.",
+                "message": "This query appears to contain sexual content that can't be processed.",
             }
             return
+    except Exception:
+        # On failure to check, proceed as safe
+        pass
 
-        # Extract URLs from search results
-        urls = [result.get("href", "") for result in web_results if result.get("href")]
+    # Analyze query for needs
+    try:
+        needs = analyze_query_needs(query)
+        needs_images = needs.get("needs_images", False)
+        needs_news = needs.get("needs_news", False)
+        is_clear = needs.get("is_clear", True)
+    except Exception:
+        needs_images = False
+        needs_news = False
+        is_clear = True
 
-        # Step 4: Scrape URLs
-        if progress_callback:
-            await progress_callback(
-                {
-                    "type": "progress",
-                    "stage": "scraping",
-                    "message": f"Scraping {len(urls)} URLs...",
-                }
-            )
+    # Generate sub-questions
+    try:
+        sub_questions = generate_sub_questions(query)
+        research_metadata["sub_questions"] = sub_questions
+    except Exception:
+        sub_questions = []
 
-        scraped_content = {}
-        if urls:
-            try:
-                scraped_content = await _scrape_urls_async(
-                    urls[:5]
-                )  # Limit to top 5 URLs
-                # Filter out error messages from scraped content
-                scraped_content = {
-                    url: content
-                    for url, content in scraped_content.items()
-                    if not (isinstance(content, str) and content.startswith("Error:"))
-                }
-            except Exception as e:
-                # If scraping fails, continue with empty content but log the error
-                print(f"Error scraping URLs: {str(e)}")
-                scraped_content = {}
+    # Perform initial web search
+    web_results = web_search(
+        query, region="us-en", safesearch="on", timelimit="y", max_results=10
+    )
+    research_metadata["web_search_results"] = web_results
+
+    if not web_results:
+        yield {
+            "type": "error",
+            "message": "No relevant information found. Please try rephrasing your query.",
+        }
+        return
+
+    # Extract URLs from search results
+    urls = [result.get("href", "") for result in web_results if result.get("href")]
+
+    # Step 4: Scrape URLs
+    if progress_callback:
+        await progress_callback(
+            {
+                "type": "progress",
+                "stage": "scraping",
+                "message": f"Scraping {len(urls)} URLs...",
+            }
+        )
+
+    scraped_content = {}
+    if urls:
+        try:
+            # Use scrape_urls (synchronous wrapper) in thread executor for async compatibility
+            scraped_content = await asyncio.to_thread(
+                scrape_urls, urls[:5]
+            )  # Limit to top 5 URLs
+
+            # Filter out error messages from scraped content
+            scraped_content = {
+                url: content
+                for url, content in scraped_content.items()
+                if not (isinstance(content, str) and content.startswith("Error:"))
+            }
+
+            print(f"Successfully scraped {len(scraped_content)} URLs")
+            for url, content in scraped_content.items():
+                print(f"  - {url}: {len(content)} characters")
+
+        except Exception as e:
+            # If scraping fails, continue with empty content but log the error
+            print(f"Error scraping URLs: {str(e)}")
+            import traceback
+
+            traceback.print_exc()
+            scraped_content = {}
 
         # Step 5: Save to RAG
         if progress_callback:
@@ -402,29 +577,33 @@ async def research_agent_stream(
                 {
                     "type": "progress",
                     "stage": "saving",
-                    "message": "Saving scraped content to database...",
+                    "message": "Saving scraped content to knowledge base...",
                 }
             )
 
         rag_save_success = False
         if scraped_content:
             try:
+                print(f"Attempting to save {len(scraped_content)} documents to RAG...")
                 save_result = save_scraped_content(scraped_content)
+
                 if save_result.get("success"):
                     rag_save_success = True
                     research_metadata["sources"].extend(list(scraped_content.keys()))
                     print(
-                        f"RAG save successful: {save_result.get('count', 0)} documents saved"
+                        f"✓ RAG save successful: {save_result.get('count', 0)} documents saved"
                     )
                 else:
                     print(
-                        f"RAG save failed: {save_result.get('error', 'Unknown error')}"
+                        f"✗ RAG save failed: {save_result.get('error', 'Unknown error')}"
                     )
             except Exception as e:
-                print(f"Error saving to RAG: {str(e)}")
+                print(f"✗ Error saving to RAG: {str(e)}")
                 import traceback
 
                 traceback.print_exc()
+        else:
+            print("No scraped content to save to RAG")
 
         # Step 6: Query RAG
         if progress_callback:
@@ -527,6 +706,93 @@ async def research_agent_stream(
                         "items": news_results,
                     }
 
+        # Step 9.5: YouTube video search (always search for videos)
+        if progress_callback:
+            await progress_callback(
+                {
+                    "type": "progress",
+                    "stage": "youtube_search",
+                    "message": "Searching for relevant YouTube videos...",
+                }
+            )
+
+        saved_videos = []
+        try:
+            # Search for videos using py_youtube (returns list of dicts: id, title, thumb, simple_data)
+            raw_videos = await asyncio.to_thread(youtube_search, query)
+            if raw_videos:
+                for video in raw_videos[:2]:  # Top 2
+                    vid_id = video.get("id")
+                    title = video.get("title", "")
+                    thumbs = video.get("thumb", []) or []
+                    simple_data = video.get("simple_data", "")
+                    parsed = _parse_simple_youtube_data(simple_data)
+                    video_url = (
+                        f"https://www.youtube.com/watch?v={vid_id}" if vid_id else ""
+                    )
+                    description = ""
+                    thumbnail = thumbs[0] if thumbs else ""
+                    transcript = None
+                    if video_url:
+                        try:
+                            video_data = await asyncio.to_thread(
+                                get_video_data, video_url
+                            )
+                            description = (
+                                video_data.get("description", "") or description
+                            )
+                            if video_data.get("thumbnail"):
+                                thumbnail = video_data.get("thumbnail")
+                            if not parsed.get("channel"):
+                                channel_obj = video_data.get("channel") or {}
+                                if isinstance(channel_obj, dict):
+                                    parsed["channel"] = channel_obj.get(
+                                        "name", parsed.get("channel", "")
+                                    )
+                        except Exception as vd_err:
+                            print(
+                                f"YouTube detailed fetch failed for {vid_id}: {vd_err}"
+                            )
+                        try:
+                            transcript = await asyncio.to_thread(
+                                get_video_transcript, vid_id
+                            )
+                        except Exception as trans_error:
+                            print(f"Transcript unavailable for {vid_id}: {trans_error}")
+
+                    saved_videos.append(
+                        {
+                            "url": video_url,
+                            "id": vid_id,
+                            "title": title,
+                            "description": description,
+                            "thumbnail": thumbnail,
+                            "channel": parsed.get("channel", ""),
+                            "views": parsed.get("views", ""),
+                            "duration": parsed.get("duration", ""),
+                            "published": parsed.get("published", ""),
+                            "has_transcript": transcript is not None,
+                        }
+                    )
+
+                # Save videos to bucket
+                if saved_videos:
+                    save_result = save_youtube_videos_to_bucket(saved_videos, query)
+                    if save_result.get("success"):
+                        research_metadata["youtube"] = {
+                            "file_url": save_result.get("file_url"),
+                            "file_id": save_result.get("file_id"),
+                            "videos": saved_videos,
+                        }
+                    print(f"✓ Found and saved {len(saved_videos)} YouTube videos")
+                else:
+                    print("No YouTube videos found")
+        except Exception as e:
+            print(f"Error searching YouTube: {str(e)}")
+            import traceback
+
+            traceback.print_exc()
+
         # Step 10: Combine all content and generate final answer
         if progress_callback:
             await progress_callback(
@@ -569,22 +835,111 @@ async def research_agent_stream(
             else "No specific sources found, but conducting research based on general knowledge."
         )
 
-        # Generate final answer prompt
-        final_prompt = f"""You are a professional researcher. Based on the following information, provide a comprehensive and well-structured answer to the user's query.
+        # Prepare sub-questions context
+        sub_questions_text = ""
+        if sub_questions:
+            sub_questions_text = "\n".join(
+                [f"{i+1}. {q}" for i, q in enumerate(sub_questions)]
+            )
+
+        # Prepare images context
+        images_context = ""
+        if saved_images:
+            images_context = f"\nImages found: {len(saved_images)} relevant images"
+
+        # Prepare YouTube context
+        youtube_context = ""
+        if saved_videos:
+            youtube_context = "\n\nYouTube Videos Found:\n"
+            for i, video in enumerate(saved_videos, 1):
+                youtube_context += f"{i}. {video.get('title', 'Untitled')} by {video.get('channel', 'Unknown')}\n"
+                youtube_context += f"   URL: {video.get('url', '')}\n"
+                if video.get("description"):
+                    youtube_context += (
+                        f"   Description: {video.get('description', '')[:200]}...\n"
+                    )
+
+        # Prepare news context
+        news_context = ""
+        if news_results:
+            news_context = "\n\nRecent News:\n"
+            for i, news_item in enumerate(news_results[:5], 1):
+                news_context += f"{i}. {news_item.get('title', 'Untitled')}\n"
+                news_context += f"   Source: {news_item.get('source', 'Unknown')}\n"
+
+        # Prepare sources/references context for explicit links
+        sources_context = ""
+        all_source_urls = []
+
+        # Collect web sources
+        if research_metadata["sources"]:
+            all_source_urls.extend(research_metadata["sources"])
+
+        # Build sources list
+        if all_source_urls:
+            sources_context = "\n\nWeb Sources:\n"
+            for i, url in enumerate(all_source_urls, 1):
+                # Try to get title from web_results if available
+                source_title = f"Source {i}"
+                for web_result in web_results:
+                    if web_result.get("href") == url:
+                        source_title = web_result.get("title", source_title)
+                        break
+                sources_context += f"{i}. {source_title}\n   {url}\n"
+
+        # Generate final answer prompt with structured format
+        final_prompt = f"""You are a professional deep researcher. Generate a comprehensive research report in the following EXACT structure:
 
 User Query: {query}
 
-Research Context:
-{context}
+Sub-Questions to Address:
+{sub_questions_text}
 
-Please provide a detailed, accurate answer based on the research context. Include citations when relevant. If images or news were found, mention them appropriately."""
+Research Context:
+{context}{images_context}{youtube_context}{news_context}{sources_context}
+
+Generate your response in this EXACT format:
+
+## Introduction
+Provide a clear, engaging introduction to the topic (2-3 paragraphs). Set context and explain why this topic matters.
+
+## Main Analysis
+Provide detailed, comprehensive analysis addressing the user's query and sub-questions. Use proper formatting with headings and bullet points. Include:
+- Key concepts and definitions
+- Detailed explanations
+- Important facts and data
+- Expert insights from sources
+- Practical applications or examples
+
+Reference sources naturally in your text like: "According to [source]..." or "Research shows..."
+
+## YouTube Resources
+{f"We found {len(saved_videos)} highly relevant videos:" if saved_videos else "No video resources were found for this topic."}
+{chr(10).join([f"{i+1}. **{v.get('title', 'Untitled')}** by {v.get('channel', 'Unknown')}" + chr(10) + f"   - {v.get('description', 'No description available')[:200]}..." + chr(10) + f"   - Watch: {v.get('url', '')}" for i, v in enumerate(saved_videos)]) if saved_videos else ""}
+
+## Related News
+{f"Recent developments and news:" if news_results else "No recent news found for this topic."}
+{chr(10).join([f"{i+1}. **{n.get('title', 'Untitled')}** - {n.get('source', 'Unknown')}" + chr(10) + f"   {n.get('body', '')[:150]}..." for i, n in enumerate(news_results[:5])]) if news_results else ""}
+
+## Sources & References
+List all web sources used in this research:
+{chr(10).join([f"[{i+1}] {url}" for i, url in enumerate(all_source_urls)]) if all_source_urls else "No web sources were scraped for this research."}
+
+## Conclusion
+Provide a strong conclusion that:
+- Summarizes key findings
+- Answers the original query clearly
+- Provides actionable insights or recommendations
+- Suggests next steps or areas for further exploration
+
+IMPORTANT: Follow this structure EXACTLY. Do not skip any sections. In the Sources & References section, list each URL on a new line with its number."""
 
         if progress_callback:
             await progress_callback(
                 {
                     "type": "progress",
                     "stage": "generating",
-                    "message": "Generating final answer...",
+                    "message": "Generating structured research report...",
                 }
             )
 
@@ -618,10 +973,12 @@ Please provide a detailed, accurate answer based on the research context. Includ
             transcript = {
                 "query": query,
                 "answer": full_answer,
+                "sub_questions": research_metadata["sub_questions"],
                 "sources": research_metadata["sources"],
                 "web_search_results": research_metadata["web_search_results"],
                 "rag_results": research_metadata["rag_results"],
                 "images": research_metadata["images"],
+                "youtube": research_metadata["youtube"],
                 "news": research_metadata["news"],
                 "model": validated_model,
                 "session_id": session_id,
@@ -645,19 +1002,123 @@ Please provide a detailed, accurate answer based on the research context. Includ
 
         # Send final result metadata
         research_time = time.time() - start_time
+
+        # Collect all resource URLs
+        all_resources = []
+        all_resources.extend(research_metadata["sources"])
+        all_resources.extend([img["url"] for img in research_metadata["images"]])
+
+        # Add YouTube video URLs
+        if research_metadata.get("youtube") and isinstance(
+            research_metadata["youtube"], dict
+        ):
+            youtube_videos = research_metadata["youtube"].get("videos", [])
+            all_resources.extend(
+                [video.get("url", "") for video in youtube_videos if video.get("url")]
+            )
+
+        # Add news URLs
+        if research_metadata.get("news") and isinstance(
+            research_metadata["news"], dict
+        ):
+            news_items = research_metadata["news"].get("items", [])
+            all_resources.extend(
+                [item.get("url", "") for item in news_items if item.get("url")]
+            )
+
+        # Update research session in database
+        if research_slug:
+            try:
+                chat_db.update_research_status(
+                    slug=research_slug,
+                    status="completed",
+                    duration=research_time,
+                    answer=full_answer,
+                    resources_used=all_resources,
+                    metadata={
+                        "sub_questions": research_metadata["sub_questions"],
+                        "images": research_metadata["images"],
+                        "youtube": research_metadata["youtube"],
+                        "news": research_metadata["news"],
+                        "rag_results_count": len(research_metadata["rag_results"]),
+                        "web_search_results_count": len(
+                            research_metadata["web_search_results"]
+                        ),
+                        "transcript_file": {
+                            "file_id": (
+                                transcript_save.get("file_id")
+                                if isinstance(transcript_save, dict)
+                                else None
+                            ),
+                            "file_url": (
+                                transcript_save.get("file_url")
+                                if isinstance(transcript_save, dict)
+                                else None
+                            ),
+                        },
+                    },
+                )
+            except Exception as e:
+                print(f"Failed to update research session: {e}")
+
+        # Build structured references list for frontend
+        references = []
+        for i, url in enumerate(research_metadata["sources"], 1):
+            ref_obj = {"id": i, "url": url, "title": f"Source {i}", "type": "web"}
+            # Try to get title from web_results
+            for web_result in web_results:
+                if web_result.get("href") == url:
+                    ref_obj["title"] = web_result.get("title", ref_obj["title"])
+                    ref_obj["snippet"] = web_result.get("body", "")[:200]
+                    break
+            references.append(ref_obj)
+
+        # Add YouTube references
+        for video in saved_videos:
+            references.append(
+                {
+                    "id": len(references) + 1,
+                    "url": video.get("url", ""),
+                    "title": video.get("title", ""),
+                    "type": "youtube",
+                    "channel": video.get("channel", ""),
+                    "thumbnail": video.get("thumbnail", ""),
+                }
+            )
+
+        # Add news references
+        if news_results:
+            for news_item in news_results:
+                references.append(
+                    {
+                        "id": len(references) + 1,
+                        "url": news_item.get("url", ""),
+                        "title": news_item.get("title", ""),
+                        "type": "news",
+                        "source": news_item.get("source", ""),
+                        "date": news_item.get("date", ""),
+                    }
+                )
+
         yield {
             "type": "result",
             "data": {
                 "answer": full_answer,
+                "sub_questions": research_metadata["sub_questions"],
                 "sources": research_metadata["sources"],
+                "references": references,  # NEW: Structured references for easy manipulation
                 "images": research_metadata["images"],
+                "youtube": research_metadata["youtube"],
                 "news": research_metadata["news"],
                 "rag_results": research_metadata["rag_results"],
+                "research_slug": research_slug,  # Include slug in response
                 "metadata": {
                     "research_time": research_time,
                     "sources_count": len(research_metadata["sources"]),
                     "images_count": len(research_metadata["images"]),
+                    "youtube_count": len(saved_videos),
                     "news_count": len(news_results) if needs_news else 0,
+                    "sub_questions_count": len(sub_questions),
                     "model": model,
                     "session_id": session_id,
                     "transcript_file": {
@@ -686,13 +1147,7 @@ Please provide a detailed, accurate answer based on the research context. Includ
             },
         }
 
-    except Exception as e:
-        error_msg = str(e) if str(e) else "Unknown error occurred"
-        print(f"Research agent error: {error_msg}")
-        import traceback
-
-        traceback.print_exc()
-        yield {"type": "error", "message": f"Research failed: {error_msg}"}
+    # End of research_agent_stream
 
 
 # ========================================
