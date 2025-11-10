@@ -14,7 +14,7 @@ import {
 import { Avatar, AvatarFallback } from '../ui/avatar'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { cn } from '../../lib/utils'
-import { Plus, Search, BookOpen, Folder, Cpu, Settings, PanelRightClose, PanelRightOpen, Edit3, Trash2 } from 'lucide-react'
+import { Plus, Search, BookOpen, Folder, Cpu, /* Settings */ PanelRightClose, PanelRightOpen, Edit3, Trash2 } from 'lucide-react'
 
 
 
@@ -34,7 +34,7 @@ const ChatSidebar = ({
     const navigate = useNavigate()
     const location = useLocation()
 
-    const isSettingsActive = location.pathname.startsWith('/app/settings')
+    // const isSettingsActive = location.pathname.startsWith('/app/settings') // settings hidden for now
     const isFilesActive = location.pathname.startsWith('/app/files')
     // Load sessions from API
     const loadChatsFromDatabase = async () => {
@@ -421,66 +421,20 @@ const ChatSidebar = ({
                         )}
                     </motion.div>
 
-                    {/* Settings */}
-                    <motion.div
-                        animate={{
-                            flexDirection: isExpanded ? 'row' : 'column',
-                            alignItems: 'center',
-                            gap: isExpanded ? 8 : 4,
-                            marginBottom: isExpanded ? 0 : 0
-                        }}
-                        transition={{ type: 'spring', stiffness: 260, damping: 26 }}
-                    >
-                        {isExpanded ? (
-                            <button
-                                onClick={() => navigate('/app/settings')}
-                                className={cn(
-                                    "w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors",
-                                    isSettingsActive
-                                        ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
-                                        : "text-gray-300 hover:bg-gray-800/60"
-                                )}
-                            >
-                                <Settings className="w-4 h-4" />
-                                <div className="flex flex-col text-start ps-3">
-                                    <motion.span
-                                        className="truncate"
-                                        animate={{ opacity: isExpanded ? 1 : 0 }}
-                                        transition={{ duration: 0.2 }}
-                                    >
-                                        Settings
-                                    </motion.span>
-                                    <motion.span
-                                        className="truncate text-xs text-gray-500"
-                                        animate={{ opacity: isExpanded ? 1 : 0 }}
-                                        transition={{ duration: 0.2 }}
-                                    >
-                                        Track files from your conversations.
-                                    </motion.span>
-                                </div>
-                            </button>
-                        ) : (
-                            <Tooltip>
-                                <TooltipTrigger>
-                                    <button
-                                        onClick={() => navigate('/app/settings')}
-                                        className={cn(
-                                            "p-2 cursor-pointer transition-colors",
-                                            isSettingsActive
-                                                ? "text-blue-400 bg-blue-500/20 rounded-md"
-                                                : "text-gray-400 hover:text-gray-200"
-                                        )}
-                                        title="Settings"
-                                    >
-                                        <Settings className="w-4 h-4" />
-                                    </button>
-                                </TooltipTrigger>
-                                <TooltipContent side="right" align="center" className="bg-slate-900 text-gray-200 border border-gray-800" hideArrow={true} sideOffset={10}>
-                                    <p>Settings</p>
-                                </TooltipContent>
-                            </Tooltip>
-                        )}
-                    </motion.div>
+                    {/* Settings nav item hidden until implemented */}
+                    {false && (
+                        <motion.div
+                            animate={{
+                                flexDirection: isExpanded ? 'row' : 'column',
+                                alignItems: 'center',
+                                gap: isExpanded ? 8 : 4,
+                                marginBottom: isExpanded ? 0 : 0
+                            }}
+                            transition={{ type: 'spring', stiffness: 260, damping: 26 }}
+                        >
+                            {/* Original settings button commented out */}
+                        </motion.div>
+                    )}
                 </motion.div>
             </motion.div>
 

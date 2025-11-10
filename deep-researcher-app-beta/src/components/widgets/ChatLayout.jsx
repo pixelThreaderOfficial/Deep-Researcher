@@ -1,10 +1,11 @@
 import React, { useState, useMemo, useEffect } from 'react'
-import { Outlet, useNavigate } from 'react-router-dom'
+import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import ChatSidebar from './ChatSidebar'
 import ChatHeader from './ChatHeader'
 
 const ChatLayout = () => {
     const navigate = useNavigate()
+    const location = useLocation()
     const [recentChats, setRecentChats] = useState([])
     const [isLoadingChats, setIsLoadingChats] = useState(false)
 
@@ -126,6 +127,16 @@ const ChatLayout = () => {
         navigate('/settings')
     }
 
+    const pageTitle = (() => {
+        const p = location.pathname || ''
+        if (p.startsWith('/app/researches')) return 'Research History'
+        if (p.startsWith('/app/research/')) return 'Research'
+        if (p.startsWith('/app/files')) return 'Files'
+        if (p.startsWith('/app/settings')) return 'Settings'
+        if (p.startsWith('/app')) return 'Home'
+        return 'Chat'
+    })()
+
     return (
         <div className="flex h-screen flex-col">
 
@@ -148,6 +159,7 @@ const ChatLayout = () => {
                         onOpenSettings={handleOpenSettings}
                         model="granite3-moe"
                         chatInfo={chatInfo}
+                        pageTitle={pageTitle}
                     />
 
                     {/* Content Area with Outlet */}
