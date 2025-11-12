@@ -37,7 +37,7 @@ const AIInput = () => {
     const [messageDisplayVisible, setMessageDisplayVisible] = useState(false);
     const [selectedFileType, setSelectedFileType] = useState('Images');
     const [selectedAgentType, setSelectedAgentType] = useState('Research Assistant');
-    const [selectedModel, setSelectedModel] = useState('Claude Sonnet 4');
+    const [selectedModel, setSelectedModel] = useState('No Models Available');
     const [isInputFocused, setIsInputFocused] = useState(false);
     const [isProcessing, setIsProcessing] = useState(false);
     const [showSuccess, setShowSuccess] = useState(false);
@@ -45,7 +45,7 @@ const AIInput = () => {
     const [characterCount, setCharacterCount] = useState(0);
     const [isFileDropdownOpen, setIsFileDropdownOpen] = useState(false);
     const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
-    const [isResearchMode, setIsResearchMode] = useState(false);
+    const [isResearchMode, setIsResearchMode] = useState(true); // Always enabled for research-only mode
 
     // Inline autocomplete state
     const [inlineSuggestion, setInlineSuggestion] = useState('');
@@ -601,7 +601,8 @@ const AIInput = () => {
                                 <div className="flex items-center justify-between mt-4">
                                     {/* Left Controls */}
                                     <div className="flex items-center gap-2">
-                                        <DropdownMenu onOpenChange={setIsFileDropdownOpen}>
+                                        {/* TODO: File attachment - not yet implemented */}
+                                        {/* <DropdownMenu onOpenChange={setIsFileDropdownOpen}>
                                             <DropdownMenuTrigger asChild>
                                                 <motion.button
                                                     whileHover={{ scale: 1.05 }}
@@ -635,9 +636,10 @@ const AIInput = () => {
                                                     </DropdownMenuItem>
                                                 ))}
                                             </DropdownMenuContent>
-                                        </DropdownMenu>
+                                        </DropdownMenu> */}
 
-                                        <AIInputSettingModal
+                                        {/* TODO: Settings modal - not yet implemented */}
+                                        {/* <AIInputSettingModal
                                             selectedModel={selectedModel}
                                             setSelectedModel={setSelectedModel}
                                             selectedAgentType={selectedAgentType}
@@ -651,21 +653,7 @@ const AIInput = () => {
                                             >
                                                 <Settings className="w-5 h-5" />
                                             </motion.button>
-                                        </AIInputSettingModal>
-
-                                        {/* Research Mode Toggle */}
-                                        <motion.button
-                                            whileHover={{ scale: 1.05 }}
-                                            whileTap={{ scale: 0.95 }}
-                                            onClick={() => setIsResearchMode(!isResearchMode)}
-                                            className={`p-2 rounded-lg transition-all duration-200 cursor-pointer focus:outline-none focus:ring-0 ${isResearchMode
-                                                ? 'text-blue-400 bg-blue-500/20 border border-blue-500/40'
-                                                : 'text-gray-400 hover:text-gray-200 hover:bg-gray-600 border border-transparent'
-                                                }`}
-                                            title={isResearchMode ? 'Disable Research Mode' : 'Enable Research Mode'}
-                                        >
-                                            <Search className="w-5 h-5" />
-                                        </motion.button>
+                                        </AIInputSettingModal> */}
                                     </div>
 
                                     {/* Right Controls */}
@@ -974,7 +962,53 @@ const AIInput = () => {
                             </div>
                         </motion.div>
 
-
+                        {/* Sample Research Queries */}
+                        <motion.div
+                            className="mt-6"
+                            initial={{ opacity: 0, y: 20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.5, delay: 0.4 }}
+                        >
+                            <p className="text-center text-gray-400 text-sm mb-4">Try these sample research queries:</p>
+                            <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                                {[
+                                    {
+                                        title: "AI & Machine Learning Trends",
+                                        query: "Research the latest developments in Artificial Intelligence and Machine Learning for 2025. Provide latest news, search some relevant images of AI applications, relevant YouTube videos, and an in-depth summary of emerging trends and technologies."
+                                    },
+                                    {
+                                        title: "Quantum Computing Progress",
+                                        query: "Investigate recent breakthroughs in Quantum Computing technology. Search some relevant images, educational YouTube videos, and a comprehensive summary of current capabilities and future implications."
+                                    },
+                                    {
+                                        title: "Climate Tech Innovations",
+                                        query: "Analyze cutting edge climate technology and sustainability innovations. Gather latest news, sample images of new technologies, informative YouTube videos, and provide an in-depth summary of solutions addressing climate change."
+                                    }
+                                ].map((sample, index) => (
+                                    <motion.button
+                                        key={index}
+                                        onClick={() => {
+                                            setQuery(sample.query);
+                                            textareaRef.current?.focus();
+                                        }}
+                                        whileHover={{ scale: 1.02, y: -2 }}
+                                        whileTap={{ scale: 0.98 }}
+                                        className="flex-1 bg-gray-800/50 hover:bg-gray-800/70 border border-gray-700 hover:border-gray-600 rounded-xl p-4 text-left transition-all duration-200 cursor-pointer group"
+                                    >
+                                        <div className="flex items-start gap-3">
+                                            <div className="flex-1">
+                                                <h4 className="text-gray-200 font-medium mb-1 group-hover:text-white transition-colors">
+                                                    {sample.title}
+                                                </h4>
+                                                <p className="text-xs text-gray-500 line-clamp-2">
+                                                    {sample.query.substring(0, 100)}...
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </motion.button>
+                                ))}
+                            </div>
+                        </motion.div>
 
                         {/* Message Display */}
                         <AnimatePresence>
@@ -1020,7 +1054,7 @@ const AIInput = () => {
                 </div>
 
                 {/* CTA Component */}
-                <CTAComponent />
+                {/* <CTAComponent /> */}
             </ClickSpark>
         </div>
     );
