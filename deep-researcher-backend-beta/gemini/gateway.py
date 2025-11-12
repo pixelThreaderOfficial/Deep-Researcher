@@ -41,6 +41,7 @@ app = FastAPI()
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://localhost:1420",
+    "http://tauri.localhost",
 ]
 
 app.add_middleware(

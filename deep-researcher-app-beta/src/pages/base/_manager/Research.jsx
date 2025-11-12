@@ -77,6 +77,92 @@ const Research = () => {
     }
   }
 
+  // Helpers to detect and extract URLs for previews
+  const isImageUrl = (url = '') => /\.(png|jpe?g|gif|webp|svg)(\?.*)?$/i.test(url)
+  const extractUrlsFromString = (str = '') => {
+    if (!str) return []
+    const urlRegex = /(https?:\/\/[^\s)"'>]+)/g
+    const matches = str.match(urlRegex)
+    return matches ? matches : []
+  }
+  const extractYouTubeId = (url = '') => {
+    try {
+      const u = new URL(url)
+      if (u.hostname.includes('youtu.be')) {
+        return u.pathname.split('/')[1] || null
+      }
+      if (u.hostname.includes('youtube.com')) {
+        if (u.pathname.startsWith('/watch')) return u.searchParams.get('v')
+        if (u.pathname.startsWith('/embed/')) return u.pathname.split('/')[2]
+        if (u.pathname.startsWith('/shorts/')) return u.pathname.split('/')[2]
+      }
+    } catch (e) {
+      // ignore invalid URLs
+    }
+    return null
+  }
+
+  // Build image and YouTube collections from metadata, sources, and answer text
+  const imageUrls = useMemo(() => {
+    const set = new Set()
+    // From metadata.images
+    if (research?.metadata?.images && Array.isArray(research.metadata.images)) {
+      research.metadata.images.forEach((img) => {
+        const src = img?.file_url || img?.url
+        if (src) set.add(src)
+      })
+    }
+    // From resources_used
+    // if (Array.isArray(research?.resources_used)) {
+    //   research.resources_used.forEach((u) => {
+    //     if (typeof u === 'string' && isImageUrl(u)) set.add(u)
+    //   })
+    // }
+    // From answer text
+    if (typeof research?.answer === 'string') {
+      extractUrlsFromString(research.answer).forEach((u) => {
+        if (isImageUrl(u)) set.add(u)
+      })
+    }
+    return Array.from(set)
+  }, [research])
+
+  const youtubeVideos = useMemo(() => {
+    const byId = new Map()
+    // From metadata.youtube.videos
+    const metaVideos = research?.metadata?.youtube?.videos
+    if (Array.isArray(metaVideos)) {
+      metaVideos.forEach((v) => {
+        const id = v?.id || extractYouTubeId(v?.url)
+        if (id && !byId.has(id)) byId.set(id, { id, title: v?.title || '', url: v?.url || '' })
+      })
+    }
+    // From resources_used
+    if (Array.isArray(research?.resources_used)) {
+      research.resources_used.forEach((u) => {
+        const id = typeof u === 'string' ? extractYouTubeId(u) : null
+        if (id && !byId.has(id)) byId.set(id, { id, title: '', url: u })
+      })
+    }
+    // From answer text
+    if (typeof research?.answer === 'string') {
+      extractUrlsFromString(research.answer).forEach((u) => {
+        const id = extractYouTubeId(u)
+        if (id && !byId.has(id)) byId.set(id, { id, title: '', url: u })
+      })
+    }
+    return Array.from(byId.values())
+  }, [research])
+
+  const handleImageError = (e) => {
+    if (e?.target) e.target.style.display = 'none'
+  }
+
+  const nonImageSources = useMemo(() => {
+    if (!Array.isArray(research?.resources_used)) return []
+    return research.resources_used.filter((u) => typeof u === 'string' && !isImageUrl(u))
+  }, [research])
+
   return (
     <div className="p-6 space-y-6">
       {loading && (
@@ -139,7 +225,7 @@ const Research = () => {
               <span className="text-sm font-medium text-gray-400">Duration</span>
             </div>
             <div className="text-lg font-bold text-gray-200">
-              {research ? formatDuration(research.durationSec) : '—'}
+              {research ? formatDuration(research.durationSec ?? research.duration ?? 0) : '—'}
             </div>
           </div>
 
@@ -192,6 +278,29 @@ const Research = () => {
         )}
       </motion.div>
 
+      {/* Image previews at top */}
+      {imageUrls.length > 0 && (
+        <div className="bg-gray-800 border border-gray-600 rounded-lg p-6 -mt-2">
+          <h3 className="text-md font-semibold text-gray-300 mb-3">Image Previews</h3>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+            {imageUrls.map((url, idx) => (
+              <a key={idx} href={url} target="_blank" rel="noreferrer" className="group">
+                <div className="relative bg-gray-900 border border-gray-700 rounded-md overflow-hidden">
+                  <img
+                    src={url}
+                    alt=""
+                    onError={handleImageError}
+                    className="w-full h-32 object-cover transition-transform duration-200 group-hover:scale-[1.02]"
+                    loading="lazy"
+                    referrerPolicy="no-referrer"
+                  />
+                </div>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Content Placeholder */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
@@ -209,9 +318,9 @@ const Research = () => {
         {/* Sources */}
         <div className="mt-6">
           <h3 className="text-md font-semibold text-gray-300 mb-2">Sources</h3>
-          {research?.resources_used && research.resources_used.length > 0 ? (
+          {nonImageSources && nonImageSources.length > 0 ? (
             <ul className="list-disc list-inside text-sm text-blue-300 space-y-1">
-              {research.resources_used.map((src, i) => (
+              {nonImageSources.map((src, i) => (
                 <li key={i}>
                   <a href={src} target="_blank" rel="noreferrer" className="hover:underline">{src}</a>
                 </li>
@@ -221,6 +330,33 @@ const Research = () => {
             <div className="text-sm text-gray-500">No sources recorded.</div>
           )}
         </div>
+
+        {/* YouTube previews */}
+        {youtubeVideos.length > 0 && (
+          <div className="mt-6">
+            <h3 className="text-md font-semibold text-gray-300 mb-3">Video Previews</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {youtubeVideos.map((v) => (
+                <div key={v.id} className="space-y-2">
+                  <div className="relative w-full overflow-hidden rounded-lg border border-gray-600 bg-black pt-[56.25%]">
+                    <iframe
+                      className="absolute inset-0 w-full h-full"
+                      src={`https://www.youtube.com/embed/${v.id}`}
+                      title={v.title || 'YouTube video'}
+                      frameborder="0"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin"
+                      allowfullscreen></iframe>
+                  </div>
+                  {(v.title || v.url) && (
+                    <div className="text-xs text-gray-400 truncate">
+                      {v.title || v.url}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Metadata summary */}
         {research?.metadata && (
