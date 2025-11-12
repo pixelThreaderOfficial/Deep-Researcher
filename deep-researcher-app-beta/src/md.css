@@ -8,17 +8,65 @@
     /* gray-200 */
 }
 
+/* Heading styles - h1 to h6 */
 .md h1,
-.md h2,
-.md h3,
-.md h4,
-.md .prose h1,
-.md .prose h2,
-.md .prose h3,
-.md .prose h4 {
+.md .prose h1 {
+    font-size: 2.25em;
+    font-weight: 800;
     margin-top: 1.25em;
     margin-bottom: 0.6em;
-    letter-spacing: 0.2px;
+    letter-spacing: -0.025em;
+    color: #f3f4f6;
+}
+
+.md h2,
+.md .prose h2 {
+    font-size: 1.875em;
+    font-weight: 700;
+    margin-top: 1.25em;
+    margin-bottom: 0.6em;
+    letter-spacing: -0.025em;
+    color: #f3f4f6;
+}
+
+.md h3,
+.md .prose h3 {
+    font-size: 1.5em;
+    font-weight: 600;
+    margin-top: 1.25em;
+    margin-bottom: 0.6em;
+    letter-spacing: -0.025em;
+    color: #f3f4f6;
+}
+
+.md h4,
+.md .prose h4 {
+    font-size: 1.25em;
+    font-weight: 600;
+    margin-top: 1.25em;
+    margin-bottom: 0.6em;
+    letter-spacing: 0;
+    color: #e5e7eb;
+}
+
+.md h5,
+.md .prose h5 {
+    font-size: 1.125em;
+    font-weight: 600;
+    margin-top: 1.25em;
+    margin-bottom: 0.6em;
+    letter-spacing: 0;
+    color: #e5e7eb;
+}
+
+.md h6,
+.md .prose h6 {
+    font-size: 1em;
+    font-weight: 600;
+    margin-top: 1.25em;
+    margin-bottom: 0.6em;
+    letter-spacing: 0;
+    color: #e5e7eb;
 }
 
 .md p,
