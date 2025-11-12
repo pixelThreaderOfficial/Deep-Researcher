@@ -301,6 +301,35 @@ const Research = () => {
         </div>
       )}
 
+      {/* YouTube previews directly below images */}
+      {youtubeVideos.length > 0 && (
+        <div className="bg-gray-800 border border-gray-600 rounded-lg p-6 -mt-4">
+          <h3 className="text-md font-semibold text-gray-300 mb-3">Video Previews</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {youtubeVideos.map((v) => (
+              <div key={v.id} className="space-y-2">
+                <div className="relative w-full overflow-hidden rounded-lg border border-gray-600 bg-black pt-[56.25%]">
+                  <iframe
+                    className="absolute inset-0 w-full h-full"
+                    src={`https://www.youtube.com/embed/${v.id}?rel=0`}
+                    title={v.title || 'YouTube video'}
+                    frameBorder="0"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                    referrerPolicy="strict-origin-when-cross-origin"
+                    allowFullScreen
+                  />
+                </div>
+                {(v.title || v.url) && (
+                  <div className="text-xs text-gray-400 truncate">
+                    {v.title || v.url}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Content Placeholder */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
@@ -331,32 +360,6 @@ const Research = () => {
           )}
         </div>
 
-        {/* YouTube previews */}
-        {youtubeVideos.length > 0 && (
-          <div className="mt-6">
-            <h3 className="text-md font-semibold text-gray-300 mb-3">Video Previews</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {youtubeVideos.map((v) => (
-                <div key={v.id} className="space-y-2">
-                  <div className="relative w-full overflow-hidden rounded-lg border border-gray-600 bg-black pt-[56.25%]">
-                    <iframe
-                      className="absolute inset-0 w-full h-full"
-                      src={`https://www.youtube.com/embed/${v.id}`}
-                      title={v.title || 'YouTube video'}
-                      frameborder="0"
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin"
-                      allowfullscreen></iframe>
-                  </div>
-                  {(v.title || v.url) && (
-                    <div className="text-xs text-gray-400 truncate">
-                      {v.title || v.url}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
 
         {/* Metadata summary */}
         {research?.metadata && (
