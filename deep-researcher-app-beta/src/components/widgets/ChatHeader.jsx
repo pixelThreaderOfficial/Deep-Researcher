@@ -7,6 +7,7 @@ import ThisChatSettings from './ThisChatSettings'
 const ChatHeader = ({ onOpenSettings, model, chatInfo, chatTitle, onUpdateTitle, sessionId, isResearchMode = false, pageTitle }) => {
     const location = useLocation()
     const isChatPage = location.pathname.startsWith('/chat')
+    const isFilesPage = location.pathname.includes('/files') || pageTitle?.toLowerCase().includes('file')
     const derivedTitle = pageTitle || (isResearchMode ? 'Research' : (isChatPage ? (chatTitle || 'New Chat') : ''))
     const [isInfoOpen, setIsInfoOpen] = useState(false)
     const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false)
@@ -77,11 +78,18 @@ const ChatHeader = ({ onOpenSettings, model, chatInfo, chatTitle, onUpdateTitle,
             {/* Header Content */}
             <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3 text-gray-100">
-                    <div className="p-2 rounded-lg bg-gray-800 border border-gray-700">
-                        {(!isChatPage && (pageTitle?.toLowerCase().includes('research'))) || isResearchMode ? (
+                    <div className="p-2 rounded-lg bg-gray-800 border border-gray-700 relative" title={isFilesPage ? 'Files' : undefined}>
+                        {isFilesPage ? (
+                            <FileText className="w-5 h-5 text-cyan-400" />
+                        ) : (!isChatPage && (pageTitle?.toLowerCase().includes('research'))) || isResearchMode ? (
                             <Search className="w-5 h-5 text-purple-400" />
                         ) : (
                             <Bot className="w-5 h-5 text-blue-400" />
+                        )}
+                        {isChatPage && (chatInfo?.totalFiles || 0) > 0 && (
+                            <div className="absolute -top-1 -right-1 bg-cyan-600 text-[10px] leading-none px-1 py-0.5 rounded shadow-sm" title={`${chatInfo.totalFiles} file${chatInfo.totalFiles === 1 ? '' : 's'}`}>
+                                {chatInfo.totalFiles}
+                            </div>
                         )}
                     </div>
                     <div className="flex-1 min-w-0">

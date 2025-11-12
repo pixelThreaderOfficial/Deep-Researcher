@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { fetchFiles, getFileStats, deleteFile, getDownloadUrl } from '@/lib/filesApi'
 import { toast } from 'sonner'
 
@@ -178,10 +179,7 @@ const Files = () => {
                 className="flex items-center justify-between"
             >
                 <div className="flex items-center gap-3">
-                    <motion.div
-                        whileHover={{ rotate: 180 }}
-                        transition={{ duration: 0.3 }}
-                    >
+                    <motion.div>
                         <Folder className="w-6 h-6 text-blue-400" />
                     </motion.div>
                     <div>
@@ -223,22 +221,6 @@ const Files = () => {
                 </motion.div>
             )}
 
-            {/* Search Bar */}
-            <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3, delay: 0.1 }}
-                className="relative"
-            >
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-                <Input
-                    placeholder="Search files by name, type, or chat..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-10 bg-gray-800 border-gray-600 text-gray-100 focus:border-blue-500"
-                />
-            </motion.div>
-
             {/* File Sections */}
             {loading ? (
                 <motion.div
@@ -278,7 +260,7 @@ const Files = () => {
                                         <span className="text-xs text-gray-500 bg-gray-800 px-2 py-1 rounded-full">
                                             {section.files.length} files
                                         </span>
-                                        <Button
+                                        {/* <Button
                                             variant="ghost"
                                             size="sm"
                                             onClick={() => viewAllFiles(section.title)}
@@ -286,7 +268,7 @@ const Files = () => {
                                         >
                                             View All
                                             <ArrowRight className="w-3 h-3 ml-1" />
-                                        </Button>
+                                        </Button> */}
                                     </div>
                                 </div>
 
@@ -296,81 +278,87 @@ const Files = () => {
                                 {section.files.length > 0 ? (
                                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 ml-7">
                                         {section.files.map((file, fileIndex) => (
-                                            <motion.div
-                                                key={file.name}
-                                                initial={{ opacity: 0, scale: 0.95 }}
-                                                animate={{ opacity: 1, scale: 1 }}
-                                                transition={{ duration: 0.2, delay: fileIndex * 0.05 }}
-                                                className="bg-gray-800 border border-gray-600 rounded-lg p-4 hover:bg-gray-700 transition-all duration-200 group"
-                                            >
-                                                {/* File Header */}
-                                                <div className="flex items-start justify-between mb-3">
-                                                    <div className="flex items-center gap-3">
-                                                        {getFileIcon(file.name)}
-                                                        <div className="flex-1 min-w-0">
-                                                            <h3 className="text-sm font-medium text-gray-200 truncate">
-                                                                {file.name}
-                                                            </h3>
-                                                            <p className="text-xs text-gray-500">{file.type}</p>
-                                                            <p className="text-xs text-gray-400 mt-1">
-                                                                <span className="font-medium">Chat:</span> {file.chat}
-                                                            </p>
+                                            <Tooltip key={file.id || file.name}>
+                                                <TooltipTrigger asChild>
+                                                    <motion.div
+                                                        initial={{ opacity: 0, scale: 0.95 }}
+                                                        animate={{ opacity: 1, scale: 1 }}
+                                                        transition={{ duration: 0.2, delay: fileIndex * 0.05 }}
+                                                        className="bg-gray-800 border border-gray-600 rounded-lg p-4 hover:bg-gray-700 transition-all duration-200 group overflow-hidden"
+                                                    >
+                                                        {/* File Header */}
+                                                        <div className="flex items-start justify-between mb-3">
+                                                            <div className="flex items-center gap-3">
+                                                                {getFileIcon(file.name)}
+                                                                <div className="flex-1 min-w-0 overflow-hidden">
+                                                                    <h3 className="text-sm font-medium text-gray-200 truncate" title={file.name}>
+                                                                        {file.name.length > 40 ? file.name.substring(0, 40) + '...' : file.name}
+                                                                    </h3>
+                                                                    <p className="text-xs text-gray-500">{file.type}</p>
+                                                                    <p className="text-xs text-gray-400 mt-1">
+                                                                        <span className="font-medium">ID:</span> {file.id}
+                                                                    </p>
+                                                                </div>
+                                                            </div>
+
+                                                            {/* Action Buttons */}
+                                                            <div className="opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
+                                                                {/* <Button
+                                                                    variant="ghost"
+                                                                    size="sm"
+                                                                    onClick={() => handleViewFile(file)}
+                                                                    className="h-6 w-6 p-0 text-gray-400 hover:text-blue-400"
+                                                                    title="Preview file"
+                                                                >
+                                                                    <Eye className="w-3 h-3" />
+                                                                </Button> */}
+                                                                <Button
+                                                                    variant="ghost"
+                                                                    size="sm"
+                                                                    onClick={() => handleDownloadFile(file)}
+                                                                    className="h-6 w-6 p-0 text-gray-400 hover:text-green-400"
+                                                                    title="Download file"
+                                                                >
+                                                                    <Download className="w-3 h-3" />
+                                                                </Button>
+                                                                <Button
+                                                                    variant="ghost"
+                                                                    size="sm"
+                                                                    onClick={() => handleDeleteFile(file)}
+                                                                    className="h-6 w-6 p-0 text-gray-400 hover:text-red-400"
+                                                                    title="Delete file"
+                                                                >
+                                                                    <Trash2 className="w-3 h-3" />
+                                                                </Button>
+                                                            </div>
                                                         </div>
-                                                    </div>
 
-                                                    {/* Action Buttons */}
-                                                    <div className="opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
-                                                        <Button
-                                                            variant="ghost"
-                                                            size="sm"
-                                                            onClick={() => handleViewFile(file)}
-                                                            className="h-6 w-6 p-0 text-gray-400 hover:text-blue-400"
-                                                            title="Preview file"
-                                                        >
-                                                            <Eye className="w-3 h-3" />
-                                                        </Button>
-                                                        <Button
-                                                            variant="ghost"
-                                                            size="sm"
-                                                            onClick={() => handleDownloadFile(file)}
-                                                            className="h-6 w-6 p-0 text-gray-400 hover:text-green-400"
-                                                            title="Download file"
-                                                        >
-                                                            <Download className="w-3 h-3" />
-                                                        </Button>
-                                                        <Button
-                                                            variant="ghost"
-                                                            size="sm"
-                                                            onClick={() => handleDeleteFile(file)}
-                                                            className="h-6 w-6 p-0 text-gray-400 hover:text-red-400"
-                                                            title="Delete file"
-                                                        >
-                                                            <Trash2 className="w-3 h-3" />
-                                                        </Button>
-                                                    </div>
-                                                </div>
-
-                                                {/* File Details */}
-                                                <div className="space-y-2 text-xs text-gray-500">
-                                                    <div className="flex justify-between">
-                                                        <span>Size: {file.size}</span>
-                                                        <span>{file.date}</span>
-                                                    </div>
-                                                    <div className="flex justify-between items-center">
-                                                        <span className={`px-2 py-1 rounded-full text-xs ${file.ioTag === 'generated' ? 'bg-blue-500/20 text-blue-400' :
-                                                                file.ioTag === 'uploaded' ? 'bg-green-500/20 text-green-400' :
-                                                                    'bg-purple-500/20 text-purple-400'
-                                                            }`}>
-                                                            {file.user}
-                                                        </span>
-                                                        {file.tags && file.tags.length > 0 && (
-                                                            <span className="text-xs text-gray-400" title={file.tags.join(', ')}>
-                                                                🏷️ {file.tags.length}
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                </div>
-                                            </motion.div>
+                                                        {/* File Details */}
+                                                        <div className="space-y-2 text-xs text-gray-500">
+                                                            <div className="flex justify-between">
+                                                                <span>Size: {file.size}</span>
+                                                                <span>{file.date}</span>
+                                                            </div>
+                                                            <div className="flex justify-between items-center">
+                                                                <span className={`px-2 py-1 rounded-full text-xs ${file.ioTag === 'generated' ? 'bg-blue-500/20 text-blue-400' :
+                                                                    file.ioTag === 'uploaded' ? 'bg-green-500/20 text-green-400' :
+                                                                        'bg-purple-500/20 text-purple-400'
+                                                                    }`}>
+                                                                    {file.user}
+                                                                </span>
+                                                                {file.tags && file.tags.length > 0 && (
+                                                                    <span className="text-xs text-gray-400" title={file.tags.join(', ')}>
+                                                                        🏷️ {file.tags.length}
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    </motion.div>
+                                                </TooltipTrigger>
+                                                <TooltipContent sideOffset={8}>
+                                                    {file.name}
+                                                </TooltipContent>
+                                            </Tooltip>
                                         ))}
                                     </div>
                                 ) : (

@@ -112,10 +112,7 @@ const Researches = () => {
         className="flex items-center justify-between"
       >
         <div className="flex items-center gap-3">
-          <motion.div
-            whileHover={{ rotate: 180 }}
-            transition={{ duration: 0.3 }}
-          >
+          <motion.div>
             <BookOpen className="w-6 h-6 text-blue-400" />
           </motion.div>
           <div>
