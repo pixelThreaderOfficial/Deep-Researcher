@@ -11,7 +11,6 @@ import {
     ContextMenuItem,
     ContextMenuTrigger,
 } from "@/components/ui/context-menu"
-import { Avatar, AvatarFallback } from '../ui/avatar'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { cn } from '../../lib/utils'
 import { Plus, Search, BookOpen, Folder, Cpu, /* Settings */ PanelRightClose, PanelRightOpen, Edit3, Trash2 } from 'lucide-react'
@@ -236,13 +235,13 @@ const ChatSidebar = ({
                         opacity: { duration: 0.2 }
                     }}
                 >
-                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                    {/* <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
                     <input
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
                         placeholder="Search chats"
                         className="w-full pl-8 pr-3 py-2 rounded-md bg-slate-900 border border-gray-800 text-sm text-gray-200 placeholder:text-gray-500 outline-none focus:border-gray-700"
-                    />
+                    /> */}
                 </motion.div>
 
                 {/* Navigation items - transform between horizontal and vertical layout */}
@@ -267,9 +266,8 @@ const ChatSidebar = ({
                         {isExpanded ? (
                             <button
                                 onClick={() => {
-                                    onNewChat()
-                                    // Refresh chats from database after creating new chat
-                                    setTimeout(() => loadChatsFromDatabase(), 100)
+                                    // Navigate to research mode (home page)
+                                    navigate('/')
                                 }}
                                 className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-gray-300 hover:bg-gray-800/60 transition-colors"
                             >
@@ -280,14 +278,14 @@ const ChatSidebar = ({
                                         animate={{ opacity: isExpanded ? 1 : 0 }}
                                         transition={{ duration: 0.2 }}
                                     >
-                                        New chat
+                                        New Research
                                     </motion.span>
                                     <motion.span
                                         className="truncate text-xs text-gray-500"
                                         animate={{ opacity: isExpanded ? 1 : 0 }}
                                         transition={{ duration: 0.2 }}
                                     >
-                                        Create a new chat.
+                                        Start a new research session.
                                     </motion.span>
                                 </div>
                             </button>
@@ -296,18 +294,17 @@ const ChatSidebar = ({
                                 <TooltipTrigger>
                                     <button
                                         className="p-2 cursor-pointer text-gray-400 hover:text-gray-200"
-                                        title="New chat"
+                                        title="New Research"
                                         onClick={() => {
-                                            onNewChat()
-                                            // Refresh chats from database after creating new chat
-                                            setTimeout(() => loadChatsFromDatabase(), 100)
+                                            // Navigate to research mode (home page)
+                                            navigate('/')
                                         }}
                                     >
                                         <Plus className="w-4 h-4" />
                                     </button>
                                 </TooltipTrigger>
                                 <TooltipContent side="right" align="center" className="bg-slate-900 text-gray-200 border border-gray-800" hideArrow={true} sideOffset={10}>
-                                    <p>New chat</p>
+                                    <p>New Research</p>
                                 </TooltipContent>
                             </Tooltip>
                         )}
@@ -438,10 +435,9 @@ const ChatSidebar = ({
                 </motion.div>
             </motion.div>
 
-            {/* Recent Chats */}
-            <AnimatePresence initial={false}>
-
-                {isExpanded && (
+            {/* Recent Chats - Hidden as per user request */}
+            {false && isExpanded && (
+                <AnimatePresence initial={false}>
                     <motion.div
                         key="recent"
                         className="px-3 py-3"
@@ -511,8 +507,8 @@ const ChatSidebar = ({
                             </AnimatePresence>
                         </div>
                     </motion.div>
-                )}
-            </AnimatePresence>
+                </AnimatePresence>
+            )}
         </motion.aside>
     )
 }
