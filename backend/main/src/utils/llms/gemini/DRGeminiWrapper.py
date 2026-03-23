@@ -50,7 +50,7 @@ from typing import (
 from PIL import Image
 import json
 from main.src.utils.versionManagement import getAppVersion
-from main.src.llms.prompts.getSchema import getImageUnderstandingSchema
+from main.src.utils.llms.prompts.getSchema import getImageUnderstandingSchema
 from main.src.utils.DRLogger import dr_logger
 from main.secrets.DRSecrets import Secrets
 

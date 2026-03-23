@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 from typing import Literal, NoReturn
 
@@ -8,16 +9,19 @@ from main.apis.models.research import (
     ResearchListResponse,
     ResearchPatch,
     ResearchRecord,
+    ResearchRunRequest,
     ResearchSourceCreate,
     ResearchSourceListResponse,
     ResearchSourcePatch,
     ResearchSourceRecord,
 )
+from main.src.research import ResearchOrchestrator as ResearchPipeline
 from main.src.research import research_api_orchestrator
 
 router = APIRouter(prefix="/research", tags=["research"])
 
 research_view = research_api_orchestrator.ResearchOrchestrator()
+pipeline = ResearchPipeline()
 
 
 def _raise_research_http_error(action: str, exc: Exception) -> NoReturn:
@@ -189,3 +193,45 @@ def delete_research_source(source_id: str) -> Response:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except Exception as exc:
         _raise_research_http_error(f"Delete research source {source_id}", exc)
+
+
+@router.post("/run", status_code=status.HTTP_202_ACCEPTED)
+async def run_research(payload: ResearchRunRequest) -> dict:
+    """
+    ## Description
+
+    Triggers a live research execution pipeline for the given prompt.
+    Runs asynchronously in the background and emits state updates via SSE.
+
+    ## Parameters
+
+    - `payload` (`ResearchRunRequest`)
+      - Contains ``prompt``, optional ``context``, ``workspace_id``, etc.
+
+    ## Returns
+
+    `dict`
+    ```json
+    { "job_id": "uuid-string", "status": "accepted" }
+    ```
+
+    ## Side Effects
+
+    - Starts a background ``asyncio.create_task`` for the research pipeline.
+    - Emits SSE events to `/events/research`.
+    """
+    import asyncio
+
+    job_id = payload.research_id or str(uuid.uuid4())
+
+    async def _runner():
+        try:
+            await pipeline.execute(job_id, payload.model_dump())
+        except Exception as exc:
+            import logging
+            logging.getLogger("research").error(f"Pipeline error for {job_id}: {exc}")
+
+    # Fire and forget locally (orchestrator handles SSE broadcasting)
+    asyncio.create_task(_runner())
+
+    return {"job_id": job_id, "status": "accepted"}

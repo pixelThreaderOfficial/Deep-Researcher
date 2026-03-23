@@ -25,6 +25,7 @@ VALID_MODULES: List[str] = [
     "UTILS",
     "MIGRATIONS",
     "BACKGROUND_TASKS",
+    "RESEARCH",
 ]
 
 

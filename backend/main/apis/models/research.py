@@ -315,3 +315,13 @@ class ResearchSourceListResponse(BaseModel):
 Research = ResearchRecord
 ResearchTemplate = ResearchTemplateRecord
 ResearchPlan = ResearchPlanRecord
+
+
+class ResearchRunRequest(BaseModel):
+    """Payload for triggering the research execution pipeline."""
+
+    prompt: str
+    context: str | None = None
+    research_id: str | None = None
+    workspace_id: str | None = None
+    api_key: str | None = None

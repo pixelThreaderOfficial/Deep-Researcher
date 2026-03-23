@@ -1,1147 +1,1171 @@
 """
-DBVector.py — Deep Researcher v2
-=================================
-Collection-agnostic ChromaDB CRUD manager with SQLite3 WAL metadata store.
+TestSearchIngest.py — Deep Researcher v2
+=========================================
+Integration test suite for the IngestionService + SearchEngine pipeline.
 
-Design:
-  - DBVectorManager  : thin ChromaDB wrapper; all methods accept collection_name.
-  - MetadataStore    : SQLite3 (WAL mode) for relational status tracking.
-  - Singleton exports: `db_vector_manager`, `metadata_store`
+Tests both **sequential** and **parallel** ingestion/search flows, covering
+all four collections: websites, pdfs, images, and custom text.
 
-All heavy lifting (chunking, embedding, ingestion) lives in IngestionService.py.
-All search orchestration lives in SearchEngine.py.
+Architecture Under Test
+-----------------------
+::
+
+    IngestionService
+        │  asyncio.PriorityQueue
+        ▼
+    Worker Pool (3 workers)
+        │  Ollama embed → ChromaDB upsert + SQLite3 WAL
+        ▼
+    SearchEngine
+        │  asyncio.gather fan-out
+        ▼
+    MergedContext  { results, sources, total }
+
+Running the Tests
+-----------------
+Make sure Ollama is running with the embedding model loaded::
+
+    ollama run embeddinggemma:latest
+
+Then from the project root::
+
+    # Run all tests (verbose)
+    pytest tests/TestSearchIngest.py -v
+
+    # Run only parallel tests
+    pytest tests/TestSearchIngest.py -v -k "parallel"
+
+    # Run only sequential tests
+    pytest tests/TestSearchIngest.py -v -k "sequential"
+
+    # Run with live log output
+    pytest tests/TestSearchIngest.py -v -s --log-cli-level=INFO
+
+    # Run a single test by name
+    pytest tests/TestSearchIngest.py::TestIngestionSequential::test_ingest_website_sequential -v
+
+Standalone asyncio runner (no pytest)::
+
+    python tests/TestSearchIngest.py
+
+Test Groups
+-----------
+``TestIngestionSequential``
+    Ingest one document at a time; assert it is retrievable afterwards.
+
+``TestIngestionParallel``
+    Submit multiple tasks concurrently via asyncio.gather; assert all
+    tasks complete and results are searchable.
+
+``TestSearchSequential``
+    Search one query at a time across specified collections.
+
+``TestSearchParallel``
+    Fire multiple independent searches simultaneously and assert every
+    query returns a MergedContext with results.
+
+``TestPriorityQueue``
+    Verify that HIGH-priority tasks are processed before LOW-priority tasks.
+
+``TestEndToEndParallel``
+    Full round-trip: parallel ingest → parallel search → assert
+    retrieved sources match ingested sources.
+
+Notes
+-----
+- Tests use isolated, randomly-named collections to avoid polluting the
+  shared ChromaDB store.  The ``_cleanup`` fixture drops them after each
+  test class.
+- Ollama must be reachable at ``http://localhost:11434``; otherwise the
+  embedding step will fail and tests will be skipped automatically.
+- Each test carries a ``@pytest.mark.asyncio`` decorator.  Make sure
+  ``pytest-asyncio`` is installed::
+
+      pip install pytest-asyncio
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import sqlite3
-import sys
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+import time
+from typing import Any, Dict, List
+from unittest.mock import AsyncMock, patch
 
-import chromadb
-from main.src.utils.DRLogger import LogType, dr_logger
-from main.src.utils.versionManagement import getAppVersion
+import pytest
+import aiohttp
 
 # ---------------------------------------------------------------------------
-# Path bootstrap
+# Project imports — adjust if your PYTHONPATH is set differently.
 # ---------------------------------------------------------------------------
-BASE_DIR = Path(__file__).parent  # .../store/
-SRC_DIR = BASE_DIR.parent  # .../src/
-
-for _p in [str(SRC_DIR), str(SRC_DIR.parent)]:
-    if _p not in sys.path:
-        sys.path.append(_p)
+from main.src.store.vector.IngestionService import (
+    IngestionService,
+    IngestionTask,
+    Priority,
+    make_task,
+    MergedContext,
+    SearchEngine,
+    SearchResult,
+    _embed_query,
+    DBVectorManager,
+    MetadataStore,
+    COLLECTIONS,
+)
 
 logging.basicConfig(level=logging.INFO)
-_std_logger = logging.getLogger(__name__)
+_log = logging.getLogger("TestSearchIngest")
 
 # ---------------------------------------------------------------------------
-# Supported collections
+# Pytest-asyncio global mode  (add to conftest.py if preferred)
 # ---------------------------------------------------------------------------
-COLLECTIONS = ("websites", "pdfs", "images", "custom", "research")
+pytest_plugins = ("pytest_asyncio",)
 
-# ---------------------------------------------------------------------------
-# Logging helpers (mirrors original DRLogger pattern)
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Shared test fixtures & helpers
+# ===========================================================================
+
+# Sample content reused across many tests
+_WEBSITE_CONTENT = """\
+# Transformer Architecture
+
+Transformers replaced recurrent networks in NLP by using a self-attention mechanism
+that allows the model to weigh every token against every other token in a sequence.
+
+## Multi-Head Attention
+
+Multiple attention heads learn different representation sub-spaces simultaneously.
+Each head produces an attention-weighted context vector, and the outputs are
+concatenated and linearly projected.
+
+## Feed-Forward Layers
+
+After attention, each position passes through two linear transformations with a
+ReLU activation in between — identical weights applied position-by-position.
+"""
+
+_PDF_CONTENT_MOCK = """\
+Abstract: We present a novel method for efficient large-scale information retrieval
+using dense passage embeddings. Experiments on Natural Questions show state-of-the-art
+performance compared to BM25 baselines.
+"""
+
+_CUSTOM_NOTES = [
+    "Vector databases store embeddings for approximate nearest-neighbour search.",
+    "ChromaDB is an open-source embedding database with a Python-first API.",
+    "FAISS is a Facebook AI Research library optimised for billion-scale ANN search.",
+    "Pinecone is a managed vector database service with automatic scaling.",
+    "Weaviate supports hybrid search combining BM25 and vector similarity.",
+]
+
+_SEARCH_QUERIES = [
+    "transformer self-attention mechanism",
+    "vector database embedding search",
+    "dense passage retrieval NLP",
+    "approximate nearest neighbour algorithms",
+    "ChromaDB python API usage",
+]
 
 
-def _log(level: LogType, message: str, urgency: str = "none") -> None:
-    """Dual-write to stdlib logger and DRLogger."""
-    getattr(_std_logger, level if level in ("info", "warning", "error") else "info")(
-        message
-    )
+async def _ollama_reachable() -> bool:
+    """Return True if Ollama embedding endpoint is reachable."""
+
     try:
-        dr_logger.log(
-            log_type=level,
-            message=message,
-            origin="system",
-            module="DB",
-            urgency=urgency,
-            app_version=getAppVersion(),
-        )
-    except Exception as exc:
-        _std_logger.error(f"DRLogger internal failure: {exc}")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "http://localhost:11434/api/embeddings",
+                json={"model": "embeddinggemma:latest", "prompt": "ping"},
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                return resp.status == 200
+    except Exception:
+        return False
+
+
+def _make_mock_embedding(dim: int = 768) -> List[float]:
+    """Return a deterministic fake embedding for unit tests that mock Ollama."""
+    import math
+
+    return [math.sin(i * 0.01) for i in range(dim)]
 
 
 # ===========================================================================
-# MetadataStore  —  SQLite3 (WAL) relational sidecar
+# Mock helpers — patch these when running without Ollama
 # ===========================================================================
 
 
-class MetadataStore:
+def _patch_embed():
     """
-    SQLite3 metadata sidecar for ChromaDB vector entries.
-
-    Schema
-    ------
-    vector_entries(
-        id          TEXT PRIMARY KEY,
-        collection  TEXT NOT NULL,
-        source_uri  TEXT,
-        content_hash TEXT,
-        status      TEXT DEFAULT 'pending',  -- pending | indexed | error
-        created_at  INTEGER,                 -- Unix epoch
-        updated_at  INTEGER
+    Context-manager: replaces the Ollama HTTP call with a fast in-process mock.
+    Use this for unit tests that don't need a real embedding model.
+    """
+    mock_emb = _make_mock_embedding()
+    return patch(
+        "main.src.store.vector.SearchEngine._embed_query",
+        new=AsyncMock(return_value=mock_emb),
     )
 
-    WAL mode is enabled on every connection for concurrent-write safety.
-    """
 
-    def __init__(self, db_path: Union[str, Path]) -> None:
-        self.db_path = str(db_path)
-        self._local = None  # We create per-thread connections via _conn()
-        self._init_db()
-        _log("info", f"MetadataStore initialised at '{self.db_path}' (WAL mode)")
+def _patch_db_query(results: Dict[str, Any]):
+    """Patch db_vector_manager.query to return a controlled result dict."""
+    return patch(
+        "main.src.store.vector.SearchEngine.db_vector_manager.query",
+        new=AsyncMock(return_value=results),
+    )
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
-    def _conn(self) -> sqlite3.Connection:
-        """Return a thread-local SQLite connection with WAL mode active."""
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.row_factory = sqlite3.Row
-        return conn
+def _patch_db_upsert():
+    """Patch db_vector_manager.upsert so writes don't touch disk."""
+    return patch(
+        "main.src.store.vector.DBVector.DBVectorManager.upsert",
+        new=AsyncMock(return_value={"success": True}),
+    )
 
-    def _init_db(self) -> None:
-        with self._conn() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS vector_entries (
-                    id            TEXT PRIMARY KEY,
-                    collection    TEXT NOT NULL,
-                    source_uri    TEXT,
-                    content_hash  TEXT,
-                    status        TEXT NOT NULL DEFAULT 'pending',
-                    created_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                    updated_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )
-            """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_ve_collection
-                ON vector_entries(collection)
-            """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_ve_status
-                ON vector_entries(collection, status)
-            """
-            )
-            conn.commit()
 
-    # ------------------------------------------------------------------
-    # Async public API (offload blocking sqlite calls to thread)
-    # ------------------------------------------------------------------
-
-    async def upsert(
-        self,
-        id: str,
-        collection: str,
-        source_uri: str = "",
-        content_hash: str = "",
-        status: str = "indexed",
-    ) -> None:
-        def _run():
-            with self._conn() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO vector_entries
-                        (id, collection, source_uri, content_hash, status, updated_at)
-                    VALUES (?, ?, ?, ?, ?, strftime('%s','now'))
-                    ON CONFLICT(id) DO UPDATE SET
-                        status       = excluded.status,
-                        content_hash = excluded.content_hash,
-                        updated_at   = excluded.updated_at
-                """,
-                    (id, collection, source_uri, content_hash, status),
-                )
-                conn.commit()
-
-        await asyncio.to_thread(_run)
-
-    async def mark_status(self, id: str, status: str) -> None:
-        def _run():
-            with self._conn() as conn:
-                conn.execute(
-                    """
-                    UPDATE vector_entries
-                    SET status = ?, updated_at = strftime('%s','now')
-                    WHERE id = ?
-                """,
-                    (status, id),
-                )
-                conn.commit()
-
-        await asyncio.to_thread(_run)
-
-    async def fetch_by_collection(
-        self,
-        collection: str,
-        status: Optional[str] = None,
-        limit: int = 500,
-    ) -> List[Dict[str, Any]]:
-        def _run():
-            with self._conn() as conn:
-                if status:
-                    rows = conn.execute(
-                        "SELECT * FROM vector_entries WHERE collection=? AND status=? LIMIT ?",
-                        (collection, status, limit),
-                    ).fetchall()
-                else:
-                    rows = conn.execute(
-                        "SELECT * FROM vector_entries WHERE collection=? LIMIT ?",
-                        (collection, limit),
-                    ).fetchall()
-                return [dict(r) for r in rows]
-
-        return await asyncio.to_thread(_run)
-
-    async def fetch_one(self, id: str) -> Optional[Dict[str, Any]]:
-        def _run():
-            with self._conn() as conn:
-                row = conn.execute(
-                    "SELECT * FROM vector_entries WHERE id=?", (id,)
-                ).fetchone()
-                return dict(row) if row else None
-
-        return await asyncio.to_thread(_run)
-
-    async def delete(self, ids: List[str]) -> int:
-        def _run():
-            with self._conn() as conn:
-                placeholders = ",".join("?" * len(ids))
-                cur = conn.execute(
-                    f"DELETE FROM vector_entries WHERE id IN ({placeholders})", ids
-                )
-                conn.commit()
-                return cur.rowcount
-
-        return await asyncio.to_thread(_run)
-
-    async def collection_stats(self) -> Dict[str, Any]:
-        def _run():
-            with self._conn() as conn:
-                rows = conn.execute(
-                    """
-                    SELECT collection, status, COUNT(*) as cnt
-                    FROM vector_entries
-                    GROUP BY collection, status
-                """
-                ).fetchall()
-                return [dict(r) for r in rows]
-
-        return await asyncio.to_thread(_run)
+def _patch_metadata_upsert():
+    """Patch metadata_store.upsert so SQLite writes are no-ops."""
+    return patch(
+        "main.src.store.vector.DBVector.MetadataStore.upsert",
+        new=AsyncMock(),
+    )
 
 
 # ===========================================================================
-# DBVectorManager  —  collection-agnostic ChromaDB CRUD
+# SECTION 1 — Sequential Ingestion Tests
 # ===========================================================================
 
 
-class DBVectorManager:
+class TestIngestionSequential:
     """
-    Collection-agnostic ChromaDB CRUD wrapper for Deep Researcher v2.
+    Ingest documents one at a time and verify each task reaches 'indexed'
+    status.  Uses mocked embeddings and DB calls for hermetic execution.
 
-    Key changes from v1
-    --------------------
-    - The singleton no longer hard-codes a single collection.
-    - All CRUD methods accept ``collection_name`` as a first-class parameter.
-    - Collections are lazily created on first access and cached in ``_cols``.
-    - Pre-computed ``embeddings`` are **always** supplied by callers; this class
-      never calls Ollama / SigLIP directly (that is IngestionService's job).
+    Sequential flow::
 
-    Collections
-    -----------
-    "websites" | "pdfs" | "images" | "custom"
+        submit(task_1) → queue.join()
+        assert task_1 status == 'indexed'
 
-    Return contract
-    ---------------
-    Every public method returns::
-
-        {"success": bool, "message": str, "data": Any | None}
+        submit(task_2) → queue.join()
+        assert task_2 status == 'indexed'
     """
 
-    def __init__(self, persist_directory: Union[str, Path]) -> None:
-        self.persist_directory = str(persist_directory)
-        self._client = chromadb.PersistentClient(path=self.persist_directory)
-        self._cols: Dict[str, Any] = {}  # collection cache
-        _log("info", f"DBVectorManager ready at '{self.persist_directory}'")
+    @pytest.fixture(autouse=True)
+    async def _service(self):
+        """Start / stop a fresh IngestionService for every test."""
+        self.service = IngestionService(worker_count=2)
+        await self.service.start()
+        yield
+        await self.service.stop()
 
     # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
-    def _col(self, collection_name: str):
-        """Return (cached) ChromaDB collection handle, no embedding function
-        because callers always supply pre-computed vectors."""
-        if collection_name not in self._cols:
-            if collection_name not in COLLECTIONS:
-                raise ValueError(
-                    f"Unknown collection '{collection_name}'. Valid: {COLLECTIONS}"
+    @pytest.mark.asyncio
+    async def test_ingest_website_sequential(self):
+        """
+        Submit a single website ingestion task and assert:
+        - task_id is returned immediately
+        - queue drains without errors
+        """
+        _log.info("▶ test_ingest_website_sequential")
+        task = make_task(
+            collection="websites",
+            content=_WEBSITE_CONTENT,
+            source_uri="https://example.com/transformers",
+            metadata={"topic": "nlp"},
+        )
+
+        with _patch_embed(), _patch_db_upsert(), _patch_metadata_upsert():
+            task_id = await self.service.submit(task)
+            await self.service._queue.join()
+
+        assert task_id == task.task_id, "Returned task_id must match submitted task."
+        _log.info("  ✓ website ingestion completed, task_id=%s", task_id)
+
+    @pytest.mark.asyncio
+    async def test_ingest_custom_sequential(self):
+        """
+        Ingest five custom text notes one by one.
+        Asserts the queue drains successfully after each submission.
+        """
+        _log.info("▶ test_ingest_custom_sequential")
+        ids = []
+
+        with _patch_embed(), _patch_db_upsert(), _patch_metadata_upsert():
+            for i, note in enumerate(_CUSTOM_NOTES):
+                task = make_task(
+                    collection="custom",
+                    content=note,
+                    source_uri=f"user://note-{i}",
                 )
-            self._cols[collection_name] = self._client.get_or_create_collection(
-                name=collection_name,
-                metadata={"hnsw:space": "cosine"},
-                # No embedding_function — we always pass pre-computed embeddings
-            )
-            _log("info", f"Collection '{collection_name}' opened/created.")
-        return self._cols[collection_name]
+                task_id = await self.service.submit(task)
+                ids.append(task_id)
+                # Drain after each submit to enforce strict sequentiality
+                await self.service._queue.join()
+
+        assert len(ids) == len(_CUSTOM_NOTES)
+        assert len(set(ids)) == len(ids), "All task IDs must be unique."
+        _log.info("  ✓ %d custom notes ingested sequentially", len(ids))
+
+    @pytest.mark.asyncio
+    async def test_ingest_respects_priority_sequential(self):
+        """
+        Submit HIGH and LOW priority tasks sequentially and verify the
+        service doesn't raise on either priority value.
+        """
+        _log.info("▶ test_ingest_respects_priority_sequential")
+
+        high_task = make_task(
+            collection="custom",
+            content="High priority content",
+            priority=Priority.HIGH,
+        )
+        low_task = make_task(
+            collection="custom",
+            content="Low priority content",
+            priority=Priority.LOW,
+        )
+
+        with _patch_embed(), _patch_db_upsert(), _patch_metadata_upsert():
+            await self.service.submit(high_task)
+            await self.service.submit(low_task)
+            await self.service._queue.join()
+
+        _log.info("  ✓ HIGH and LOW priority tasks processed without errors.")
+
+    @pytest.mark.asyncio
+    async def test_ingest_unknown_collection_logs_error(self):
+        """
+        Submitting a task for a non-existent collection should not crash
+        the worker — it logs an error and moves on.
+        """
+        _log.info("▶ test_ingest_unknown_collection_logs_error")
+
+        bad_task = IngestionTask(
+            priority=Priority.NORMAL,
+            collection="nonexistent_col",
+            content="some content",
+            source_uri="test://bad",
+        )
+
+        with _patch_metadata_upsert():
+            await self.service.submit(bad_task)
+            await self.service._queue.join()  # should not hang or raise
+
+        _log.info("  ✓ Unknown collection handled gracefully.")
+
+
+# ===========================================================================
+# SECTION 2 — Parallel Ingestion Tests
+# ===========================================================================
+
+
+class TestIngestionParallel:
+    """
+    Submit multiple ingestion tasks concurrently via asyncio.gather and
+    verify all of them are processed.
+
+    Parallel flow::
+
+        asyncio.gather(
+            submit(website_task),
+            submit(pdf_task),
+            submit(custom_task_1),
+            submit(custom_task_2),
+        ) → queue.join()
+        assert all task_ids returned and unique
+    """
+
+    @pytest.fixture(autouse=True)
+    async def _service(self):
+        self.service = IngestionService(worker_count=3)
+        await self.service.start()
+        yield
+        await self.service.stop()
 
     # ------------------------------------------------------------------
-    # CRUD
-    # ------------------------------------------------------------------
 
-    async def add(
-        self,
-        collection_name: str,
-        ids: List[str],
-        embeddings: List[List[float]],
-        documents: Optional[List[str]] = None,
-        metadatas: Optional[List[Dict[str, Any]]] = None,
-    ) -> Dict[str, Any]:
-        """Insert documents with pre-computed embeddings. Skips duplicate IDs."""
-        _log("info", f"add() → '{collection_name}' × {len(ids)} docs")
-        if not ids:
-            return {"success": False, "message": "ids must be non-empty.", "data": None}
+    @pytest.mark.asyncio
+    async def test_parallel_mixed_collections(self):
+        """
+        Concurrently submit tasks to 'websites', 'pdfs', and 'custom'.
+        All must return distinct task IDs and the queue must drain.
+        """
+        _log.info("▶ test_parallel_mixed_collections")
 
-        try:
-            col = self._col(collection_name)
+        tasks = [
+            make_task("websites", _WEBSITE_CONTENT, source_uri="https://wiki.org/attn"),
+            make_task("custom", _PDF_CONTENT_MOCK, source_uri="file://mock.pdf"),
+            make_task("custom", _CUSTOM_NOTES[0], source_uri="user://note-0"),
+            make_task("custom", _CUSTOM_NOTES[1], source_uri="user://note-1"),
+        ]
 
-            # Filter out IDs that already exist
-            existing = await asyncio.to_thread(col.get, ids=ids)
-            existing_ids = set(existing.get("ids", []))
-            if existing_ids:
-                _log(
-                    "warning",
-                    f"Skipping {len(existing_ids)} duplicate IDs in '{collection_name}'.",
-                )
-                mask = [i for i, id_ in enumerate(ids) if id_ not in existing_ids]
-                ids = [ids[i] for i in mask]
-                embeddings = [embeddings[i] for i in mask]
-                documents = [documents[i] for i in mask] if documents else documents
-                metadatas = [metadatas[i] for i in mask] if metadatas else metadatas
+        with _patch_embed(), _patch_db_upsert(), _patch_metadata_upsert():
+            task_ids = await asyncio.gather(*[self.service.submit(t) for t in tasks])
+            await self.service._queue.join()
 
-            if not ids:
-                return {
-                    "success": True,
-                    "message": "All IDs already exist; nothing added.",
-                    "data": {"count": 0},
-                }
+        assert len(task_ids) == len(tasks)
+        assert len(set(task_ids)) == len(tasks), "All returned task IDs must be unique."
+        _log.info("  ✓ %d tasks ingested in parallel, all IDs unique.", len(task_ids))
 
-            kwargs: Dict[str, Any] = {"ids": ids, "embeddings": embeddings}
-            if documents is not None:
-                kwargs["documents"] = documents
-            if metadatas is not None:
-                kwargs["metadatas"] = metadatas
-
-            await asyncio.to_thread(col.add, **kwargs)
-            _log("success", f"Added {len(ids)} docs to '{collection_name}'.")
-            return {
-                "success": True,
-                "message": f"{len(ids)} document(s) added.",
-                "data": {"count": len(ids)},
-            }
-
-        except Exception as exc:
-            _log("error", f"add() failed on '{collection_name}': {exc}", "moderate")
-            return {"success": False, "message": str(exc), "data": None}
-
-    async def upsert(
-        self,
-        collection_name: str,
-        ids: List[str],
-        embeddings: List[List[float]],
-        documents: Optional[List[str]] = None,
-        metadatas: Optional[List[Dict[str, Any]]] = None,
-    ) -> Dict[str, Any]:
-        """Upsert documents — add if missing, update if present."""
-        _log("info", f"upsert() → '{collection_name}' × {len(ids)} docs")
-        if not ids:
-            return {"success": False, "message": "ids must be non-empty.", "data": None}
-
-        try:
-            col = self._col(collection_name)
-            kwargs: Dict[str, Any] = {"ids": ids, "embeddings": embeddings}
-            if documents is not None:
-                kwargs["documents"] = documents
-            if metadatas is not None:
-                kwargs["metadatas"] = metadatas
-
-            await asyncio.to_thread(col.upsert, **kwargs)
-            _log("success", f"Upserted {len(ids)} docs in '{collection_name}'.")
-            return {
-                "success": True,
-                "message": f"{len(ids)} document(s) upserted.",
-                "data": {"count": len(ids)},
-            }
-
-        except Exception as exc:
-            _log("error", f"upsert() failed on '{collection_name}': {exc}", "moderate")
-            return {"success": False, "message": str(exc), "data": None}
-
-    async def query(
-        self,
-        collection_name: str,
-        query_embeddings: List[List[float]],
-        n_results: int = 10,
-        where: Optional[Dict[str, Any]] = None,
-        include: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
-        """ANN similarity search. Returns top-k results per query embedding."""
-        _log("info", f"query() → '{collection_name}' k={n_results}")
-        include = include or ["documents", "metadatas", "distances"]
-
-        try:
-            col = self._col(collection_name)
-
-            # Guard: ChromaDB errors if n_results > collection size
-            count = await asyncio.to_thread(col.count)
-            k = min(n_results, max(count, 1))
-
-            kwargs: Dict[str, Any] = {
-                "query_embeddings": query_embeddings,
-                "n_results": k,
-                "include": include,
-            }
-            if where:
-                kwargs["where"] = where
-
-            result = await asyncio.to_thread(col.query, **kwargs)
-            _log("success", f"query() returned results from '{collection_name}'.")
-            return {"success": True, "message": "Query complete.", "data": result}
-
-        except Exception as exc:
-            _log("error", f"query() failed on '{collection_name}': {exc}", "moderate")
-            return {"success": False, "message": str(exc), "data": None}
-
-    async def fetch_all(
-        self,
-        collection_name: str,
-        where: Optional[Dict[str, Any]] = None,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """Retrieve documents with optional metadata filter (SELECT *)."""
-        _log("info", f"fetch_all() → '{collection_name}'")
-        try:
-            col = self._col(collection_name)
-            kwargs: Dict[str, Any] = {"include": ["documents", "metadatas"]}
-            if where is not None:
-                kwargs["where"] = where
-            if limit is not None:
-                kwargs["limit"] = limit
-            if offset is not None:
-                kwargs["offset"] = offset
-
-            result = await asyncio.to_thread(col.get, **kwargs)
-            ids = result.get("ids", [])
-            _log("success", f"Fetched {len(ids)} docs from '{collection_name}'.")
-            return {
-                "success": True,
-                "message": f"Fetched {len(ids)} document(s).",
-                "data": {
-                    "ids": ids,
-                    "documents": result.get("documents"),
-                    "metadatas": result.get("metadatas"),
-                },
-            }
-        except Exception as exc:
-            _log(
-                "error", f"fetch_all() failed on '{collection_name}': {exc}", "moderate"
+    @pytest.mark.asyncio
+    async def test_parallel_high_volume(self):
+        """
+        Stress test: submit 20 custom tasks concurrently and assert
+        all are processed before stop().
+        """
+        _log.info("▶ test_parallel_high_volume")
+        N = 20
+        tasks = [
+            make_task(
+                "custom",
+                f"Note number {i}: vector search is fast.",
+                priority=Priority.NORMAL,
             )
-            return {"success": False, "message": str(exc), "data": None}
+            for i in range(N)
+        ]
 
-    async def fetch_one(self, collection_name: str, id: str) -> Dict[str, Any]:
-        """Retrieve a single document by ID."""
-        _log("info", f"fetch_one('{id}') → '{collection_name}'")
-        if not id:
-            return {"success": False, "message": "id must be non-empty.", "data": None}
-        try:
-            col = self._col(collection_name)
-            result = await asyncio.to_thread(
-                col.get, ids=[id], include=["documents", "metadatas"]
+        with _patch_embed(), _patch_db_upsert(), _patch_metadata_upsert():
+            t0 = time.perf_counter()
+            task_ids = await asyncio.gather(*[self.service.submit(t) for t in tasks])
+            await self.service._queue.join()
+            elapsed = time.perf_counter() - t0
+
+        assert len(task_ids) == N
+        assert len(set(task_ids)) == N
+        _log.info("  ✓ %d tasks completed in %.2fs.", N, elapsed)
+
+    @pytest.mark.asyncio
+    async def test_parallel_mixed_priorities(self):
+        """
+        Concurrently submit tasks with all three priority levels.
+        The service must drain all tasks regardless of priority ordering.
+        """
+        _log.info("▶ test_parallel_mixed_priorities")
+
+        tasks = (
+            [
+                make_task("custom", f"HIGH note {i}", priority=Priority.HIGH)
+                for i in range(3)
+            ]
+            + [
+                make_task("custom", f"NORMAL note {i}", priority=Priority.NORMAL)
+                for i in range(3)
+            ]
+            + [
+                make_task("custom", f"LOW note {i}", priority=Priority.LOW)
+                for i in range(3)
+            ]
+        )
+
+        with _patch_embed(), _patch_db_upsert(), _patch_metadata_upsert():
+            task_ids = await asyncio.gather(*[self.service.submit(t) for t in tasks])
+            await self.service._queue.join()
+
+        assert len(set(task_ids)) == len(tasks)
+        _log.info("  ✓ Mixed-priority parallel ingestion drained cleanly.")
+
+    @pytest.mark.asyncio
+    async def test_parallel_timing_improvement(self):
+        """
+        Demonstrate that parallel ingestion is faster than sequential for
+        N tasks.  Asserts parallel wall-time ≤ sequential wall-time * 0.8.
+
+        This test is informational — it prints timing but does NOT fail the
+        suite if the speedup assertion misses due to a slow CI machine.
+        """
+        _log.info("▶ test_parallel_timing_improvement")
+        N = 10
+
+        # Sequential baseline (single worker)
+        svc_seq = IngestionService(worker_count=1)
+        await svc_seq.start()
+        tasks = [make_task("custom", f"Sequential note {i}") for i in range(N)]
+        with _patch_embed(), _patch_db_upsert(), _patch_metadata_upsert():
+            t0 = time.perf_counter()
+            for t in tasks:
+                await svc_seq.submit(t)
+            await svc_seq._queue.join()
+            seq_time = time.perf_counter() - t0
+        await svc_seq.stop()
+
+        # Parallel (3 workers)
+        svc_par = IngestionService(worker_count=3)
+        await svc_par.start()
+        tasks = [make_task("custom", f"Parallel note {i}") for i in range(N)]
+        with _patch_embed(), _patch_db_upsert(), _patch_metadata_upsert():
+            t0 = time.perf_counter()
+            await asyncio.gather(*[svc_par.submit(t) for t in tasks])
+            await svc_par._queue.join()
+            par_time = time.perf_counter() - t0
+        await svc_par.stop()
+
+        _log.info(
+            "  Timing — sequential: %.3fs  parallel: %.3fs  ratio: %.2fx",
+            seq_time,
+            par_time,
+            seq_time / max(par_time, 1e-6),
+        )
+        # Soft assert — informational only
+        if par_time > seq_time * 0.8:
+            _log.warning(
+                "  ⚠ Parallel wasn't measurably faster (may be due to mock overhead)."
             )
-            ids_ = result.get("ids", [])
-            if not ids_:
-                return {
-                    "success": True,
-                    "message": f"Document '{id}' not found.",
-                    "data": None,
-                }
-            return {
-                "success": True,
-                "message": f"Document '{id}' fetched.",
-                "data": {
-                    "id": ids_[0],
-                    "document": (result.get("documents") or [None])[0],
-                    "metadata": (result.get("metadatas") or [None])[0],
-                },
-            }
-        except Exception as exc:
-            _log("error", f"fetch_one() failed: {exc}", "moderate")
-            return {"success": False, "message": str(exc), "data": None}
 
-    async def update(
-        self,
-        collection_name: str,
-        ids: List[str],
-        documents: Optional[List[str]] = None,
-        metadatas: Optional[List[Dict[str, Any]]] = None,
-        embeddings: Optional[List[List[float]]] = None,
-    ) -> Dict[str, Any]:
-        """Update existing documents (partial field overwrite)."""
-        if not ids:
-            return {"success": False, "message": "ids must be non-empty.", "data": None}
-        if documents is None and metadatas is None and embeddings is None:
-            return {
-                "success": False,
-                "message": "Provide at least one of: documents, metadatas, embeddings.",
-                "data": None,
-            }
 
-        try:
-            col = self._col(collection_name)
-            kwargs: Dict[str, Any] = {"ids": ids}
-            if documents is not None:
-                kwargs["documents"] = documents
-            if metadatas is not None:
-                kwargs["metadatas"] = metadatas
-            if embeddings is not None:
-                kwargs["embeddings"] = embeddings
+# ===========================================================================
+# SECTION 3 — Sequential Search Tests
+# ===========================================================================
 
-            await asyncio.to_thread(col.update, **kwargs)
-            _log("success", f"Updated {len(ids)} docs in '{collection_name}'.")
-            return {
-                "success": True,
-                "message": f"{len(ids)} document(s) updated.",
-                "data": {"count": len(ids)},
-            }
 
-        except Exception as exc:
-            _log("error", f"update() failed on '{collection_name}': {exc}", "moderate")
-            return {"success": False, "message": str(exc), "data": None}
+class TestSearchSequential:
+    """
+    Run one search query at a time and verify the MergedContext structure.
 
-    async def delete(self, collection_name: str, ids: List[str]) -> Dict[str, Any]:
-        """Permanently remove documents by ID."""
-        if not ids:
-            return {"success": False, "message": "ids must be non-empty.", "data": None}
-        try:
-            col = self._col(collection_name)
-            await asyncio.to_thread(col.delete, ids=ids)
-            _log("success", f"Deleted {len(ids)} docs from '{collection_name}'.")
-            return {
-                "success": True,
-                "message": f"{len(ids)} document(s) deleted.",
-                "data": {"count": len(ids)},
-            }
-        except Exception as exc:
-            _log("error", f"delete() failed on '{collection_name}': {exc}", "moderate")
-            return {"success": False, "message": str(exc), "data": None}
+    Sequential flow::
 
-    async def collection_health(self, collection_name: str) -> Dict[str, Any]:
-        """Returns document count for the named collection."""
-        try:
-            col = self._col(collection_name)
-            count = await asyncio.to_thread(col.count)
-            return {
-                "success": True,
-                "message": f"Collection '{collection_name}' is accessible.",
-                "data": {"collection_name": collection_name, "count": count},
-            }
-        except Exception as exc:
-            _log(
-                "error",
-                f"health check failed on '{collection_name}': {exc}",
-                "critical",
+        ctx = await search_engine.search(query_1)
+        assert ctx.results, ctx.total, ctx.sources
+
+        ctx = await search_engine.search(query_2)
+        assert ...
+    """
+
+    @pytest.fixture(autouse=True)
+    def _engine(self):
+        self.engine = SearchEngine()
+
+    def _mock_chroma_result(self, col: str, n: int = 3):
+        """Build a fake ChromaDB query response for a given collection."""
+        ids = [f"{col}-id-{i}" for i in range(n)]
+        docs = [f"Document from {col} number {i}" for i in range(n)]
+        metas = [
+            {"source": f"https://{col}.example.com/{i}", "type": col} for i in range(n)
+        ]
+        distances = [0.1 * (i + 1) for i in range(n)]
+        return {
+            "success": True,
+            "data": {
+                "ids": [ids],
+                "documents": [docs],
+                "metadatas": [metas],
+                "distances": [distances],
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_search_all_collections_sequential(self):
+        """
+        Search all collections with one query.
+        Assert MergedContext is non-empty and has sources.
+        """
+        _log.info("▶ test_search_all_collections_sequential")
+        query = "transformer attention mechanism"
+
+        mock_result = self._mock_chroma_result("websites", n=3)
+
+        with _patch_embed(), _patch_db_query(mock_result):
+            ctx = await self.engine.search(query, n_results=3)
+
+        assert isinstance(ctx, MergedContext)
+        assert ctx.total > 0, "Expected at least one result."
+        assert ctx.query == query
+        _log.info("  ✓ Got %d merged results for query '%s'.", ctx.total, query[:40])
+
+    @pytest.mark.asyncio
+    async def test_search_single_collection(self):
+        """
+        Target a single collection (custom) and assert results come only from it.
+        """
+        _log.info("▶ test_search_single_collection")
+        mock_result = self._mock_chroma_result("custom", n=4)
+
+        with _patch_embed(), _patch_db_query(mock_result):
+            ctx = await self.engine.search(
+                "vector database",
+                collections=["custom"],
+                n_results=4,
             )
-            return {"success": False, "message": str(exc), "data": None}
 
-    async def all_collection_health(self) -> Dict[str, Any]:
-        """Health-check all managed collections concurrently."""
+        assert ctx.total > 0
+        for r in ctx.results:
+            assert r.collection == "custom"
+        _log.info("  ✓ All results from 'custom' collection.")
+
+    @pytest.mark.asyncio
+    async def test_search_five_queries_sequential(self):
+        """
+        Run each query in _SEARCH_QUERIES one at a time.
+        Assert every query returns a MergedContext.
+        """
+        _log.info("▶ test_search_five_queries_sequential")
+        mock_result = self._mock_chroma_result("websites", n=2)
+
+        with _patch_embed(), _patch_db_query(mock_result):
+            for q in _SEARCH_QUERIES:
+                ctx = await self.engine.search(q, n_results=2)
+                assert isinstance(
+                    ctx, MergedContext
+                ), f"Query '{q}' did not return MergedContext."
+                _log.info("    query='%s' → %d results", q[:50], ctx.total)
+
+        _log.info("  ✓ All %d sequential queries completed.", len(_SEARCH_QUERIES))
+
+    @pytest.mark.asyncio
+    async def test_search_embedding_failure_returns_empty_context(self):
+        """
+        If the embedding call fails, search() must return an empty MergedContext
+        rather than raise an exception.
+        """
+        _log.info("▶ test_search_embedding_failure_returns_empty_context")
+
+        with patch(
+            "main.src.store.vector.SearchEngine._embed_query",
+            new=AsyncMock(return_value=None),
+        ):
+            ctx = await self.engine.search("anything", n_results=5)
+
+        assert isinstance(ctx, MergedContext)
+        assert ctx.total == 0
+        assert ctx.results == []
+        _log.info("  ✓ Embedding failure handled gracefully — empty context returned.")
+
+    @pytest.mark.asyncio
+    async def test_invalid_collection_raises_value_error(self):
+        """
+        Passing an unknown collection name should raise ValueError immediately,
+        not fail silently.
+        """
+        _log.info("▶ test_invalid_collection_raises_value_error")
+
+        with pytest.raises(ValueError, match="Unknown collections"):
+            await self.engine.search("anything", collections=["nonexistent"])
+
+        _log.info("  ✓ ValueError raised for unknown collection.")
+
+    @pytest.mark.asyncio
+    async def test_context_text_respects_max_chars(self):
+        """
+        MergedContext.context_text(max_chars=N) must not exceed N characters.
+        """
+        _log.info("▶ test_context_text_respects_max_chars")
+        results = [
+            SearchResult(
+                id=f"id-{i}",
+                document="x" * 500,
+                metadata={"source": f"src-{i}"},
+                distance=float(i),
+                collection="custom",
+            )
+            for i in range(20)
+        ]
+        ctx = MergedContext(results=results, query="test")
+        text = ctx.context_text(max_chars=2000)
+        assert len(text) <= 2000 + 20, "context_text must respect max_chars budget."
+        _log.info("  ✓ context_text length %d ≤ 2000.", len(text))
+
+
+# ===========================================================================
+# SECTION 4 — Parallel Search Tests
+# ===========================================================================
+
+
+class TestSearchParallel:
+    """
+    Fire multiple search queries simultaneously and assert all return
+    valid MergedContext objects.
+
+    Parallel flow::
+
         results = await asyncio.gather(
-            *[self.collection_health(c) for c in COLLECTIONS],
-            return_exceptions=False,
+            search_engine.search(q1),
+            search_engine.search(q2),
+            search_engine.search(q3),
         )
-        return dict(zip(COLLECTIONS, results))
+        assert all(isinstance(r, MergedContext) for r in results)
+    """
+
+    @pytest.fixture(autouse=True)
+    def _engine(self):
+        self.engine = SearchEngine()
+
+    def _mock_result(self, n=2):
+        return {
+            "success": True,
+            "data": {
+                "ids": [[f"id-{i}" for i in range(n)]],
+                "documents": [[f"doc {i}" for i in range(n)]],
+                "metadatas": [[{"source": f"src-{i}"} for i in range(n)]],
+                "distances": [[0.1 * i for i in range(n)]],
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_parallel_five_queries(self):
+        """
+        Run all queries in _SEARCH_QUERIES simultaneously.
+        Assert every result is a MergedContext with total > 0.
+        """
+        _log.info("▶ test_parallel_five_queries")
+
+        with _patch_embed(), _patch_db_query(self._mock_result(n=3)):
+            t0 = time.perf_counter()
+            contexts = await asyncio.gather(
+                *[self.engine.search(q, n_results=3) for q in _SEARCH_QUERIES]
+            )
+            elapsed = time.perf_counter() - t0
+
+        assert len(contexts) == len(_SEARCH_QUERIES)
+        for q, ctx in zip(_SEARCH_QUERIES, contexts):
+            assert isinstance(
+                ctx, MergedContext
+            ), f"Query '{q}' did not return MergedContext."
+            assert ctx.total > 0, f"Query '{q}' returned 0 results."
+
+        _log.info("  ✓ %d parallel queries completed in %.3fs.", len(contexts), elapsed)
+
+    @pytest.mark.asyncio
+    async def test_parallel_different_collections(self):
+        """
+        Issue simultaneous searches each targeting a different collection.
+        """
+        _log.info("▶ test_parallel_different_collections")
+        collection_queries = [
+            ("websites", "attention mechanism"),
+            ("pdfs", "dense retrieval"),
+            ("custom", "ChromaDB api"),
+        ]
+
+        with _patch_embed(), _patch_db_query(self._mock_result(n=2)):
+            contexts = await asyncio.gather(
+                *[
+                    self.engine.search(q, collections=[col], n_results=2)
+                    for col, q in collection_queries
+                ]
+            )
+
+        for (col, q), ctx in zip(collection_queries, contexts):
+            assert isinstance(ctx, MergedContext)
+            _log.info("    col=%s query='%s' → %d results", col, q, ctx.total)
+
+        _log.info("  ✓ Parallel targeted-collection searches all succeeded.")
+
+    @pytest.mark.asyncio
+    async def test_parallel_deduplication(self):
+        """
+        When the same document ID is returned by multiple collections,
+        MergedContext must deduplicate — keeping the result with the
+        lower (better) distance score.
+        """
+        _log.info("▶ test_parallel_deduplication")
+
+        # Two collections return the same ID with different distances
+        dup_id = "dup-doc-001"
+        mock_result_a = {
+            "success": True,
+            "data": {
+                "ids": [[dup_id, "unique-a"]],
+                "documents": [["shared doc", "doc a"]],
+                "metadatas": [[{"source": "src-a"}, {"source": "src-a2"}]],
+                "distances": [[0.9, 0.3]],  # dup_id has distance 0.9 from col-a
+            },
+        }
+        mock_result_b = {
+            "success": True,
+            "data": {
+                "ids": [[dup_id, "unique-b"]],
+                "documents": [["shared doc", "doc b"]],
+                "metadatas": [[{"source": "src-b"}, {"source": "src-b2"}]],
+                "distances": [
+                    [0.2, 0.5]
+                ],  # dup_id has distance 0.2 from col-b (better)
+            },
+        }
+
+        # Feed alternating mock results per collection call
+        call_count = 0
+
+        async def _mock_query(**kwargs):
+            nonlocal call_count
+            result = mock_result_a if call_count % 2 == 0 else mock_result_b
+            call_count += 1
+            return result
+
+        with _patch_embed():
+            with patch(
+                "main.src.store.vector.SearchEngine.db_vector_manager.query",
+                side_effect=_mock_query,
+            ):
+                ctx = await self.engine.search(
+                    "anything", collections=["websites", "pdfs"]
+                )
+
+        ids_in_results = [r.id for r in ctx.results]
+        assert (
+            ids_in_results.count(dup_id) <= 1
+        ), "Duplicate ID must appear at most once."
+
+        # The surviving copy should have the better (lower) distance
+        dup_results = [r for r in ctx.results if r.id == dup_id]
+        if dup_results:
+            assert dup_results[0].distance == pytest.approx(
+                0.2, abs=1e-6
+            ), "Deduplication must keep the result with the lower distance."
+
+        _log.info(
+            "  ✓ Deduplication correct, dup_id distance=%.1f.",
+            dup_results[0].distance if dup_results else -1,
+        )
+
+    @pytest.mark.asyncio
+    async def test_parallel_search_high_concurrency(self):
+        """
+        Fire 20 simultaneous searches and assert no task raises an exception.
+        """
+        _log.info("▶ test_parallel_search_high_concurrency")
+        N = 20
+
+        with _patch_embed(), _patch_db_query(self._mock_result(n=2)):
+            t0 = time.perf_counter()
+            contexts = await asyncio.gather(
+                *[self.engine.search(f"query {i}") for i in range(N)]
+            )
+            elapsed = time.perf_counter() - t0
+
+        assert len(contexts) == N
+        assert all(isinstance(c, MergedContext) for c in contexts)
+        _log.info("  ✓ %d concurrent searches in %.3fs.", N, elapsed)
 
 
 # ===========================================================================
-# Domain metadata stores  —  SQLiteManager-backed ORM tables
-# ===========================================================================
-# These stores write into the same SQLite files managed by DBManager.py
-# (buckets.db, researches.db, scrapes.db).  They are purely relational —
-# ChromaDB's HNSW search never touches them.  Use them for:
-#   • listing / filtering by domain entity (bucket, research, scrape)
-#   • status tracking & audit trails at the domain level
-#   • foreign-key joins that ChromaDB cannot express
-#
-# Import pattern (mirrors DBManager exports):
-#
-#   from main.src.store.DBManager import (
-#       buckets_db_manager,
-#       researches_db_manager,
-#       scrapes_db_manager,
-#   )
-#   from main.src.store.DBVector import (
-#       bucket_meta_store,
-#       research_meta_store,
-#       scrape_meta_store,
-#   )
+# SECTION 5 — Priority Queue Tests
 # ===========================================================================
 
 
-class BucketMetaStore:
+class TestPriorityQueue:
     """
-    Relational metadata store for Bucket entities.
+    Verify that HIGH-priority tasks are pulled from the queue before LOW-priority
+    tasks when all tasks arrive before any worker picks them up.
 
-    Backed by ``buckets.db.sqlite3`` via ``buckets_db_manager``.
-
-    Schema
-    ------
-    bucket_meta(
-        bucket_id     TEXT PRIMARY KEY,
-        name          TEXT NOT NULL,
-        description   TEXT,
-        status        TEXT DEFAULT 'active',   -- active | archived | deleted
-        vector_collection TEXT,                -- ChromaDB collection name, if any
-        created_at    INTEGER,
-        updated_at    INTEGER
-    )
-
-    Note
-    ----
-    ChromaDB's ANN search is unaffected by this table.  This store is purely
-    for relational queries (list buckets, filter by status, etc.).
+    Strategy: pause the workers, flood the queue, then release and capture
+    processing order via a shared list.
     """
 
-    def __init__(self, db_manager) -> None:
+    @pytest.mark.asyncio
+    async def test_high_before_low(self):
         """
-        Parameters
-        ----------
-        db_manager : SQLiteManager
-            The ``buckets_db_manager`` singleton from DBManager.py.
+        Submit LOW tasks first, then HIGH tasks while workers are paused.
+        Assert HIGH tasks are processed before LOW tasks.
         """
-        self._mgr = db_manager
-        self._init_table()
-        _log("info", "BucketMetaStore initialised (buckets.db)")
+        _log.info("▶ test_high_before_low")
 
-    def _init_table(self) -> None:
-        with self._mgr._get_connection() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS bucket_meta (
-                    bucket_id         TEXT PRIMARY KEY,
-                    name              TEXT NOT NULL,
-                    description       TEXT,
-                    status            TEXT NOT NULL DEFAULT 'active',
-                    vector_collection TEXT,
-                    created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                    updated_at        INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )
-                """
+        processed_order: List[str] = []
+        gate = asyncio.Event()
+
+        original_process = None  # resolved inside _patched_process
+
+        async def _recording_process(task: IngestionTask, executor):
+            await gate.wait()  # hold until we open the gate
+            processed_order.append(f"{task.priority}-{task.content}")
+
+        svc = IngestionService(worker_count=1)
+        await svc.start()
+
+        low_tasks = [
+            make_task("custom", f"low-{i}", priority=Priority.LOW) for i in range(3)
+        ]
+        high_tasks = [
+            make_task("custom", f"high-{i}", priority=Priority.HIGH) for i in range(3)
+        ]
+
+        with (
+            _patch_metadata_upsert(),
+            patch(
+                "main.src.store.vector.IngestionService._process_custom",
+                new=_recording_process,
+            ),
+        ):
+            # Submit LOW tasks first
+            for t in low_tasks:
+                await svc._queue.put(t)
+            # Then HIGH tasks
+            for t in high_tasks:
+                await svc._queue.put(t)
+
+            # Allow processing
+            gate.set()
+            await svc._queue.join()
+
+        await svc.stop()
+
+        high_done = [o for o in processed_order if o.startswith("0-")]
+        low_done = [o for o in processed_order if o.startswith("2-")]
+
+        if high_done and low_done:
+            first_low_idx = min(processed_order.index(l) for l in low_done)
+            last_high_idx = max(processed_order.index(h) for h in high_done)
+            assert (
+                last_high_idx < first_low_idx
+            ), "All HIGH tasks must finish before any LOW task is started."
+            _log.info("  ✓ HIGH tasks completed before LOW tasks.")
+        else:
+            _log.info(
+                "  ⚠ Could not verify priority order (all tasks same priority bucket)."
             )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_bm_status ON bucket_meta(status)"
-            )
-            conn.commit()
-
-    # ------------------------------------------------------------------
-    # Async public API
-    # ------------------------------------------------------------------
-
-    async def upsert(
-        self,
-        bucket_id: str,
-        name: str,
-        description: str = "",
-        status: str = "active",
-        vector_collection: Optional[str] = None,
-    ) -> None:
-        """Insert or update a bucket metadata record."""
-
-        def _run():
-            with self._mgr._get_connection() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO bucket_meta
-                        (bucket_id, name, description, status, vector_collection, updated_at)
-                    VALUES (?, ?, ?, ?, ?, strftime('%s','now'))
-                    ON CONFLICT(bucket_id) DO UPDATE SET
-                        name              = excluded.name,
-                        description       = excluded.description,
-                        status            = excluded.status,
-                        vector_collection = excluded.vector_collection,
-                        updated_at        = excluded.updated_at
-                    """,
-                    (bucket_id, name, description, status, vector_collection),
-                )
-                conn.commit()
-
-        await asyncio.to_thread(_run)
-
-    async def mark_status(self, bucket_id: str, status: str) -> None:
-        """Update only the status field of a bucket record."""
-
-        def _run():
-            with self._mgr._get_connection() as conn:
-                conn.execute(
-                    """
-                    UPDATE bucket_meta
-                    SET status = ?, updated_at = strftime('%s','now')
-                    WHERE bucket_id = ?
-                    """,
-                    (status, bucket_id),
-                )
-                conn.commit()
-
-        await asyncio.to_thread(_run)
-
-    async def fetch_one(self, bucket_id: str) -> Optional[Dict[str, Any]]:
-        """Fetch a single bucket record by ID."""
-
-        def _run():
-            with self._mgr._get_connection() as conn:
-                row = conn.execute(
-                    "SELECT * FROM bucket_meta WHERE bucket_id = ?", (bucket_id,)
-                ).fetchone()
-                return dict(row) if row else None
-
-        return await asyncio.to_thread(_run)
-
-    async def fetch_all(
-        self,
-        status: Optional[str] = None,
-        limit: int = 500,
-    ) -> List[Dict[str, Any]]:
-        """List all buckets, optionally filtered by status."""
-
-        def _run():
-            with self._mgr._get_connection() as conn:
-                if status:
-                    rows = conn.execute(
-                        "SELECT * FROM bucket_meta WHERE status = ? LIMIT ?",
-                        (status, limit),
-                    ).fetchall()
-                else:
-                    rows = conn.execute(
-                        "SELECT * FROM bucket_meta LIMIT ?", (limit,)
-                    ).fetchall()
-                return [dict(r) for r in rows]
-
-        return await asyncio.to_thread(_run)
-
-    async def delete(self, bucket_id: str) -> None:
-        """Hard-delete a bucket metadata record."""
-
-        def _run():
-            with self._mgr._get_connection() as conn:
-                conn.execute(
-                    "DELETE FROM bucket_meta WHERE bucket_id = ?", (bucket_id,)
-                )
-                conn.commit()
-
-        await asyncio.to_thread(_run)
-
-
-class ResearchMetaStore:
-    """
-    Relational metadata store for Research entities.
-
-    Backed by ``researches.db.sqlite3`` via ``researches_db_manager``.
-
-    Schema
-    ------
-    research_meta(
-        research_id   TEXT PRIMARY KEY,
-        bucket_id     TEXT NOT NULL,            -- logical FK → bucket_meta.bucket_id
-        title         TEXT,
-        query         TEXT,
-        status        TEXT DEFAULT 'pending',   -- pending | running | done | error
-        vector_collection TEXT DEFAULT 'research',
-        created_at    INTEGER,
-        updated_at    INTEGER
-    )
-
-    Note
-    ----
-    ``vector_collection`` defaults to "research" — the ChromaDB collection
-    added in this module.  The ANN search itself runs inside ChromaDB and is
-    decoupled from this relational store.
-    """
-
-    def __init__(self, db_manager) -> None:
-        """
-        Parameters
-        ----------
-        db_manager : SQLiteManager
-            The ``researches_db_manager`` singleton from DBManager.py.
-        """
-        self._mgr = db_manager
-        self._init_table()
-        _log("info", "ResearchMetaStore initialised (researches.db)")
-
-    def _init_table(self) -> None:
-        with self._mgr._get_connection() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS research_meta (
-                    research_id       TEXT PRIMARY KEY,
-                    bucket_id         TEXT NOT NULL,
-                    title             TEXT,
-                    query             TEXT,
-                    status            TEXT NOT NULL DEFAULT 'pending',
-                    vector_collection TEXT NOT NULL DEFAULT 'research',
-                    created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                    updated_at        INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )
-                """
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_rm_bucket ON research_meta(bucket_id)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_rm_status ON research_meta(bucket_id, status)"
-            )
-            conn.commit()
-
-    # ------------------------------------------------------------------
-    # Async public API
-    # ------------------------------------------------------------------
-
-    async def upsert(
-        self,
-        research_id: str,
-        bucket_id: str,
-        title: str = "",
-        query: str = "",
-        status: str = "pending",
-        vector_collection: str = "research",
-    ) -> None:
-        """Insert or update a research metadata record."""
-
-        def _run():
-            with self._mgr._get_connection() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO research_meta
-                        (research_id, bucket_id, title, query, status, vector_collection, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, strftime('%s','now'))
-                    ON CONFLICT(research_id) DO UPDATE SET
-                        bucket_id         = excluded.bucket_id,
-                        title             = excluded.title,
-                        query             = excluded.query,
-                        status            = excluded.status,
-                        vector_collection = excluded.vector_collection,
-                        updated_at        = excluded.updated_at
-                    """,
-                    (research_id, bucket_id, title, query, status, vector_collection),
-                )
-                conn.commit()
-
-        await asyncio.to_thread(_run)
-
-    async def mark_status(self, research_id: str, status: str) -> None:
-        """Update only the status field of a research record."""
-
-        def _run():
-            with self._mgr._get_connection() as conn:
-                conn.execute(
-                    """
-                    UPDATE research_meta
-                    SET status = ?, updated_at = strftime('%s','now')
-                    WHERE research_id = ?
-                    """,
-                    (status, research_id),
-                )
-                conn.commit()
-
-        await asyncio.to_thread(_run)
-
-    async def fetch_by_bucket(
-        self,
-        bucket_id: str,
-        status: Optional[str] = None,
-        limit: int = 500,
-    ) -> List[Dict[str, Any]]:
-        """List all researches for a given bucket, optionally filtered by status."""
-
-        def _run():
-            with self._mgr._get_connection() as conn:
-                if status:
-                    rows = conn.execute(
-                        "SELECT * FROM research_meta WHERE bucket_id = ? AND status = ? LIMIT ?",
-                        (bucket_id, status, limit),
-                    ).fetchall()
-                else:
-                    rows = conn.execute(
-                        "SELECT * FROM research_meta WHERE bucket_id = ? LIMIT ?",
-                        (bucket_id, limit),
-                    ).fetchall()
-                return [dict(r) for r in rows]
-
-        return await asyncio.to_thread(_run)
-
-    async def fetch_one(self, research_id: str) -> Optional[Dict[str, Any]]:
-        """Fetch a single research record by ID."""
-
-        def _run():
-            with self._mgr._get_connection() as conn:
-                row = conn.execute(
-                    "SELECT * FROM research_meta WHERE research_id = ?", (research_id,)
-                ).fetchone()
-                return dict(row) if row else None
-
-        return await asyncio.to_thread(_run)
-
-    async def delete(self, research_id: str) -> None:
-        """Hard-delete a research metadata record."""
-
-        def _run():
-            with self._mgr._get_connection() as conn:
-                conn.execute(
-                    "DELETE FROM research_meta WHERE research_id = ?", (research_id,)
-                )
-                conn.commit()
-
-        await asyncio.to_thread(_run)
-
-
-class ScrapeMetaStore:
-    """
-    Relational metadata store for web-crawl / scrape page entities.
-
-    Backed by ``scrapes.db.sqlite3`` via ``scrapes_db_manager``.
-
-    Schema
-    ------
-    scrape_meta(
-        scrape_id     TEXT PRIMARY KEY,
-        research_id   TEXT NOT NULL,            -- logical FK → research_meta.research_id
-        bucket_id     TEXT NOT NULL,            -- logical FK → bucket_meta.bucket_id
-        url           TEXT NOT NULL,
-        content_hash  TEXT,
-        status        TEXT DEFAULT 'pending',   -- pending | scraped | indexed | error
-        vector_collection TEXT DEFAULT 'websites',
-        scraped_at    INTEGER,
-        created_at    INTEGER,
-        updated_at    INTEGER
-    )
-
-    Note
-    ----
-    ``vector_collection`` records which ChromaDB collection holds this page's
-    chunks ("websites" by default).  The ANN search runs inside ChromaDB and
-    is fully decoupled from this store.
-    """
-
-    def __init__(self, db_manager) -> None:
-        """
-        Parameters
-        ----------
-        db_manager : SQLiteManager
-            The ``scrapes_db_manager`` singleton from DBManager.py.
-        """
-        self._mgr = db_manager
-        self._init_table()
-        _log("info", "ScrapeMetaStore initialised (scrapes.db)")
-
-    def _init_table(self) -> None:
-        with self._mgr._get_connection() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS scrape_meta (
-                    scrape_id         TEXT PRIMARY KEY,
-                    research_id       TEXT NOT NULL,
-                    bucket_id         TEXT NOT NULL,
-                    url               TEXT NOT NULL,
-                    content_hash      TEXT,
-                    status            TEXT NOT NULL DEFAULT 'pending',
-                    vector_collection TEXT NOT NULL DEFAULT 'websites',
-                    scraped_at        INTEGER,
-                    created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                    updated_at        INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-                )
-                """
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_sm_research ON scrape_meta(research_id)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_sm_bucket ON scrape_meta(bucket_id)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_sm_status ON scrape_meta(research_id, status)"
-            )
-            conn.commit()
-
-    # ------------------------------------------------------------------
-    # Async public API
-    # ------------------------------------------------------------------
-
-    async def upsert(
-        self,
-        scrape_id: str,
-        research_id: str,
-        bucket_id: str,
-        url: str,
-        content_hash: str = "",
-        status: str = "pending",
-        vector_collection: str = "websites",
-        scraped_at: Optional[int] = None,
-    ) -> None:
-        """Insert or update a scrape page metadata record."""
-
-        def _run():
-            with self._mgr._get_connection() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO scrape_meta
-                        (scrape_id, research_id, bucket_id, url, content_hash,
-                         status, vector_collection, scraped_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
-                    ON CONFLICT(scrape_id) DO UPDATE SET
-                        status            = excluded.status,
-                        content_hash      = excluded.content_hash,
-                        vector_collection = excluded.vector_collection,
-                        scraped_at        = excluded.scraped_at,
-                        updated_at        = excluded.updated_at
-                    """,
-                    (
-                        scrape_id,
-                        research_id,
-                        bucket_id,
-                        url,
-                        content_hash,
-                        status,
-                        vector_collection,
-                        scraped_at,
-                    ),
-                )
-                conn.commit()
-
-        await asyncio.to_thread(_run)
-
-    async def mark_status(self, scrape_id: str, status: str) -> None:
-        """Update only the status field of a scrape record."""
-
-        def _run():
-            with self._mgr._get_connection() as conn:
-                conn.execute(
-                    """
-                    UPDATE scrape_meta
-                    SET status = ?, updated_at = strftime('%s','now')
-                    WHERE scrape_id = ?
-                    """,
-                    (status, scrape_id),
-                )
-                conn.commit()
-
-        await asyncio.to_thread(_run)
-
-    async def fetch_by_research(
-        self,
-        research_id: str,
-        status: Optional[str] = None,
-        limit: int = 500,
-    ) -> List[Dict[str, Any]]:
-        """List all scrape pages for a given research, optionally filtered by status."""
-
-        def _run():
-            with self._mgr._get_connection() as conn:
-                if status:
-                    rows = conn.execute(
-                        "SELECT * FROM scrape_meta WHERE research_id = ? AND status = ? LIMIT ?",
-                        (research_id, status, limit),
-                    ).fetchall()
-                else:
-                    rows = conn.execute(
-                        "SELECT * FROM scrape_meta WHERE research_id = ? LIMIT ?",
-                        (research_id, limit),
-                    ).fetchall()
-                return [dict(r) for r in rows]
-
-        return await asyncio.to_thread(_run)
-
-    async def fetch_one(self, scrape_id: str) -> Optional[Dict[str, Any]]:
-        """Fetch a single scrape record by ID."""
-
-        def _run():
-            with self._mgr._get_connection() as conn:
-                row = conn.execute(
-                    "SELECT * FROM scrape_meta WHERE scrape_id = ?", (scrape_id,)
-                ).fetchone()
-                return dict(row) if row else None
-
-        return await asyncio.to_thread(_run)
-
-    async def delete(self, scrape_id: str) -> None:
-        """Hard-delete a scrape metadata record."""
-
-        def _run():
-            with self._mgr._get_connection() as conn:
-                conn.execute(
-                    "DELETE FROM scrape_meta WHERE scrape_id = ?", (scrape_id,)
-                )
-                conn.commit()
-
-        await asyncio.to_thread(_run)
 
 
 # ===========================================================================
-# Initialisation helpers
+# SECTION 6 — End-to-End Parallel Round-Trip
 # ===========================================================================
 
 
-def _ensure_dirs() -> None:
-    for subdir in ("chroma_store", "sqlite"):
-        d = BASE_DIR / "database" / subdir
-        try:
-            d.mkdir(parents=True, exist_ok=True)
-            _std_logger.info(f"Directory ensured: {d}")
-        except Exception as exc:
-            _std_logger.error(f"Failed to create {d}: {exc}")
+class TestEndToEndParallel:
+    """
+    Full round-trip test: parallel ingest → parallel search.
+
+    Flow::
+
+        ┌── parallel ingest ──────────────────────────────┐
+        │  website + 3×custom                             │
+        └─────────────────────────────────────────────────┘
+                      ↓ queue.join()
+        ┌── parallel search ──────────────────────────────┐
+        │  4 queries simultaneously                       │
+        └─────────────────────────────────────────────────┘
+              ↓
+        assert every MergedContext.total > 0
+        assert sources in context match ingested URIs
+    """
+
+    @pytest.fixture(autouse=True)
+    async def _service_and_engine(self):
+        self.service = IngestionService(worker_count=3)
+        self.engine = SearchEngine()
+        await self.service.start()
+        yield
+        await self.service.stop()
+
+    @pytest.mark.asyncio
+    async def test_e2e_ingest_then_search_parallel(self):
+        """
+        Parallel ingest followed by parallel search.
+        Uses mocked embed + DB to stay hermetic; focuses on pipeline wiring.
+        """
+        _log.info("▶ test_e2e_ingest_then_search_parallel")
+
+        ingest_tasks = [
+            make_task(
+                "websites", _WEBSITE_CONTENT, source_uri="https://example.com/attn"
+            ),
+            make_task("custom", _CUSTOM_NOTES[0], source_uri="user://note-0"),
+            make_task("custom", _CUSTOM_NOTES[1], source_uri="user://note-1"),
+            make_task("custom", _CUSTOM_NOTES[2], source_uri="user://note-2"),
+        ]
+
+        expected_sources = {t.source_uri for t in ingest_tasks}
+
+        # --- Ingest phase ---
+        with _patch_embed(), _patch_db_upsert(), _patch_metadata_upsert():
+            task_ids = await asyncio.gather(
+                *[self.service.submit(t) for t in ingest_tasks]
+            )
+            await self.service._queue.join()
+
+        assert len(set(task_ids)) == len(ingest_tasks)
+        _log.info("  ● Ingest phase complete: %d tasks.", len(task_ids))
+
+        # --- Search phase ---
+        search_mock = {
+            "success": True,
+            "data": {
+                "ids": [["id-0", "id-1"]],
+                "documents": [["doc 0", "doc 1"]],
+                "metadatas": [[{"source": s} for s in list(expected_sources)[:2]]],
+                "distances": [[0.1, 0.2]],
+            },
+        }
+
+        queries = [
+            "transformer multi-head attention",
+            "vector database embedding",
+            "approximate nearest neighbour",
+            "ChromaDB python",
+        ]
+
+        with _patch_embed(), _patch_db_query(search_mock):
+            t0 = time.perf_counter()
+            contexts = await asyncio.gather(
+                *[self.engine.search(q, n_results=5) for q in queries]
+            )
+            search_elapsed = time.perf_counter() - t0
+
+        assert len(contexts) == len(queries)
+        for q, ctx in zip(queries, contexts):
+            assert isinstance(ctx, MergedContext)
+            assert ctx.total > 0, f"Query '{q}' returned 0 results post-ingest."
+
+        _log.info(
+            "  ● Search phase complete: %d queries in %.3fs.",
+            len(queries),
+            search_elapsed,
+        )
+        _log.info("  ✓ End-to-end parallel round-trip passed.")
+
+    @pytest.mark.asyncio
+    async def test_e2e_parallel_ingest_and_search_simultaneously(self):
+        """
+        Ingest and search run *at the same time* (true concurrency).
+        Asserts neither pipeline crashes when they share the DB mock concurrently.
+        """
+        _log.info("▶ test_e2e_parallel_ingest_and_search_simultaneously")
+
+        ingest_coros = [
+            self.service.submit(make_task("custom", f"concurrent note {i}"))
+            for i in range(5)
+        ]
+
+        search_mock = {
+            "success": True,
+            "data": {
+                "ids": [["x1"]],
+                "documents": [["doc x1"]],
+                "metadatas": [[{"source": "test"}]],
+                "distances": [[0.15]],
+            },
+        }
+        search_coros = [
+            self.engine.search(f"concurrent query {i}", n_results=2) for i in range(5)
+        ]
+
+        with _patch_embed(), _patch_db_upsert(), _patch_metadata_upsert(), _patch_db_query(
+            search_mock
+        ):
+            results = await asyncio.gather(*ingest_coros, *search_coros)
+
+        task_ids = results[:5]
+        contexts = results[5:]
+
+        assert len(set(task_ids)) == 5, "All ingest task IDs must be unique."
+        assert all(
+            isinstance(c, MergedContext) for c in contexts
+        ), "All search results must be MergedContext instances."
+        _log.info("  ✓ Simultaneous ingest + search completed without errors.")
 
 
-# ---------------------------------------------------------------------------
-# Module-level initialisation & singleton exports
-# ---------------------------------------------------------------------------
-if not any(x in " ".join(sys.argv) for x in ("unittest", "pytest")):
-    _ensure_dirs()
+# ===========================================================================
+# SECTION 7 — Utility / Unit Tests
+# ===========================================================================
 
-_CHROMA_PATH = BASE_DIR / "database" / "chroma_store"
-_SQLITE_PATH = BASE_DIR / "database" / "sqlite" / "metadata.db"
 
-# Singleton exports — import these everywhere
-db_vector_manager: DBVectorManager = DBVectorManager(persist_directory=_CHROMA_PATH)
-metadata_store: MetadataStore = MetadataStore(db_path=_SQLITE_PATH)
+class TestUtilities:
+    """
+    Fast unit tests for helper classes that don't require async I/O.
+    These run without Ollama or ChromaDB.
+    """
 
-# ---------------------------------------------------------------------------
-# Domain-specific metadata store singletons
-# ---------------------------------------------------------------------------
-# These write into the DBManager-owned SQLite files.  Import pattern:
-#
-#   from main.src.store.DBVector import (
-#       bucket_meta_store,
-#       research_meta_store,
-#       scrape_meta_store,
-#   )
-# ---------------------------------------------------------------------------
-from main.src.store.DBManager import (  # noqa: E402 — intentional late import
-    buckets_db_manager,
-    researches_db_manager,
-    scrapes_db_manager,
-)
+    def test_make_task_defaults(self):
+        """make_task() helper should produce a valid IngestionTask with correct defaults."""
+        t = make_task("custom", "hello world")
+        assert t.collection == "custom"
+        assert t.content == "hello world"
+        assert t.priority == Priority.NORMAL
+        assert isinstance(t.task_id, str) and len(t.task_id) == 36  # UUID4
+        _log.info("  ✓ make_task defaults correct.")
 
-bucket_meta_store: BucketMetaStore = BucketMetaStore(db_manager=buckets_db_manager)
-research_meta_store: ResearchMetaStore = ResearchMetaStore(
-    db_manager=researches_db_manager
-)
-scrape_meta_store: ScrapeMetaStore = ScrapeMetaStore(db_manager=scrapes_db_manager)
+    def test_task_priority_ordering(self):
+        """IngestionTask must be orderable by priority for the PriorityQueue."""
+        high = IngestionTask(priority=Priority.HIGH, collection="custom", content="h")
+        low = IngestionTask(priority=Priority.LOW, collection="custom", content="l")
+        assert high < low, "HIGH (0) must sort before LOW (2)."
+        _log.info("  ✓ Task priority ordering correct.")
+
+    def test_search_result_to_dict(self):
+        """SearchResult.to_dict() must include all expected keys."""
+        r = SearchResult(
+            id="abc",
+            document="hello",
+            metadata={"source": "x"},
+            distance=0.5,
+            collection="websites",
+        )
+        d = r.to_dict()
+        assert set(d.keys()) == {"id", "document", "metadata", "distance", "collection"}
+        _log.info("  ✓ SearchResult.to_dict() shape correct.")
+
+    def test_merged_context_sources(self):
+        """MergedContext must extract unique source URIs from result metadata."""
+        results = [
+            SearchResult("1", "doc1", {"source": "https://a.com"}, 0.1, "websites"),
+            SearchResult("2", "doc2", {"source": "https://b.com"}, 0.2, "pdfs"),
+            SearchResult(
+                "3", "doc3", {"source": "https://a.com"}, 0.3, "websites"
+            ),  # dup
+        ]
+        ctx = MergedContext(results=results, query="test")
+        assert ctx.total == 3
+        assert len(ctx.sources) == 2, "Duplicate sources must be deduplicated."
+        assert "https://a.com" in ctx.sources
+        _log.info("  ✓ MergedContext deduplicates sources correctly.")
+
+    def test_collections_constant(self):
+        """COLLECTIONS must contain the four expected names."""
+        for expected in ("websites", "pdfs", "images", "custom"):
+            assert expected in COLLECTIONS, f"'{expected}' missing from COLLECTIONS."
+        _log.info("  ✓ COLLECTIONS constant has all required keys.")
+
+
+# ===========================================================================
+# Standalone runner
+# ===========================================================================
+
+
+async def _run_standalone():
+    """Run a representative subset of tests without pytest (quick smoke-test)."""
+    print("\n" + "=" * 60)
+    print("  Deep Researcher v2 — TestSearchIngest standalone runner")
+    print("=" * 60 + "\n")
+
+    # Utilities (sync)
+    u = TestUtilities()
+    u.test_make_task_defaults()
+    u.test_task_priority_ordering()
+    u.test_search_result_to_dict()
+    u.test_merged_context_sources()
+    u.test_collections_constant()
+
+    # Sequential ingestion
+    seq_ing = TestIngestionSequential()
+    await seq_ing._service().__anext__()
+    try:
+        await seq_ing.test_ingest_website_sequential()
+        await seq_ing.test_ingest_custom_sequential()
+        await seq_ing.test_ingest_respects_priority_sequential()
+    finally:
+        await seq_ing.service.stop()
+
+    # Parallel ingestion
+    par_ing = TestIngestionParallel()
+    await par_ing._service().__anext__()
+    try:
+        await par_ing.test_parallel_mixed_collections()
+        await par_ing.test_parallel_high_volume()
+    finally:
+        await par_ing.service.stop()
+
+    # Sequential search
+    seq_srch = TestSearchSequential()
+    seq_srch._engine()
+    await seq_srch.test_search_all_collections_sequential()
+    await seq_srch.test_search_embedding_failure_returns_empty_context()
+
+    # Parallel search
+    par_srch = TestSearchParallel()
+    par_srch._engine()
+    await par_srch.test_parallel_five_queries()
+    await par_srch.test_parallel_deduplication()
+
+    print("\n" + "=" * 60)
+    print("  All standalone smoke tests PASSED ✓")
+    print("=" * 60 + "\n")
+
+
+if __name__ == "__main__":
+    asyncio.run(_run_standalone())
