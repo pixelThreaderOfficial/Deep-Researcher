@@ -54,7 +54,7 @@ import {
 import { toast } from "sonner"
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { useResearchSimulator } from './useResearchSimulator'
+import { useResearchRealtime } from './useResearchRealtime'
 import { DEFAULT_SYSTEM_PROMPT } from './research_response'
 import type {
     ResearchStep,
@@ -573,6 +573,7 @@ StatsBar.displayName = 'StatsBar'
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 interface ResearchNavigationState {
+    id?: string
     title: string
     description: string
     prompt: string
@@ -591,11 +592,15 @@ const ResearchThread = () => {
     const location = useLocation()
     const navigate = useNavigate()
     const state = location.state as ResearchNavigationState | null
+
+    const researchId = state?.id || location.pathname.split('/').pop() || ""
+
     const {
         steps, stats, isRunning, elapsedSeconds,
         isPendingConfirmation, approveConfirmation, rejectConfirmation,
         stopResearch, startResearch,
-    } = useResearchSimulator()
+    } = useResearchRealtime(researchId)
+    
     const [copyStatus, setCopyStatus] = useState<'idle' | 'loading' | 'success'>('idle')
     const [artifactOpen, setArtifactOpen] = useState(false)
     // Track whether the confirmation was approved or rejected

@@ -486,6 +486,20 @@ export const deleteResearchRecord = async (researchId: string): Promise<void> =>
   await requestVoid(api.delete(`/research/${encodeURIComponent(researchId)}`));
 };
 
+export interface ResearchRunRequest {
+  prompt: string;
+  context?: string | null;
+  research_id?: string | null;
+  workspace_id?: string | null;
+  api_key?: string | null;
+}
+
+export const runResearch = async (
+  payload: ResearchRunRequest,
+): Promise<{ job_id: string; status: string }> => {
+  return requestData(api.post<{ job_id: string; status: string }>("/research/run", payload));
+};
+
 // Research Sources API
 export interface ResearchSourceRecord {
   id: string;

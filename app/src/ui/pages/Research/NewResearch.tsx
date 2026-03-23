@@ -29,7 +29,7 @@ import {
   FileText,
   Zap
 } from 'lucide-react'
-import { createResearchRecord, createResearchSourceRecord, getAllWorkspaces } from '@/lib/apis'
+import { createResearchRecord, createResearchSourceRecord, getAllWorkspaces, runResearch } from '@/lib/apis'
 
 const WORKSPACE_STYLES = [
   {
@@ -203,6 +203,13 @@ export default function NewResearch() {
       }))
 
       await Promise.all(sourcePayloads.map((payload) => createResearchSourceRecord(payload)))
+
+      // ADD THIS NEW BLOCK: Trigger the asynchronous AI research pipeline
+      await runResearch({
+        prompt: researchData.prompt,
+        research_id: createdResearch.id,
+        workspace_id: researchData.workspaceId,
+      })
 
       navigate(`/researches/${createdResearch.id}`, {
         state: {
