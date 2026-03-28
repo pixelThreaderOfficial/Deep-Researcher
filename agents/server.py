@@ -1,19 +1,38 @@
 import json
 from contextlib import asynccontextmanager
+from typing import Literal
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from docParsers.pdfParser import (
+    extract_pdf_to_md,
+    extract_text_summarized as pdf_extract_summarized,
+)
+from docParsers.docsParser import (
+    extract_docx_to_md,
+    extract_text_summarized as docx_extract_summarized,
+)
 from query.query import run_query_validation
 from sse.event_bus import event_bus
 from summarizer.summarizer import run_summarizer
 from utils.task_scheduler import scheduler
+from web.imageSearch import search_images
+from web.newsSearch import search_news
 from web.scraper import read_pages, search_and_scrape_pages
 from web.web_crawler import close_crawler_engine, init_crawler_engine
+from web.youtubeSearch import (
+    search_and_summarize as youtube_search_and_summarize,
+    youtube_search,
+    get_video_data,
+    get_video_transcript,
+)
 
+
+# ─────────────────────────── LIFESPAN ──────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -27,6 +46,8 @@ async def lifespan(app: FastAPI):
     await close_crawler_engine()
     await scheduler.shutdown()
 
+
+# ─────────────────────────── APP SETUP ─────────────────────────────────────
 
 app = FastAPI(title="Agent Server DRv2!", version="1.0.0", lifespan=lifespan)
 
@@ -53,9 +74,13 @@ app.add_middleware(
 )
 
 
+# ─────────────────────────── SSE HELPERS ───────────────────────────────────
+
 def format_sse(data: dict):
     return f"data: {json.dumps(data)}\n\n"
 
+
+# ─────────────────────────── REQUEST MODELS ────────────────────────────────
 
 class ScrapeUrlsRequest(BaseModel):
     urls: list[str]
@@ -86,8 +111,60 @@ class QueryValidateRequest(BaseModel):
     origin_research_id: str | None = None
 
 
+class ImageSearchRequest(BaseModel):
+    query: str
+    num_results: int = 5
+    timeout: float = 10.0
+    origin_research_id: str | None = None
+
+
+class NewsSearchRequest(BaseModel):
+    query: str
+    num_results: int = 5
+    timeout: float = 10.0
+    origin_research_id: str | None = None
+
+
+class YouTubeSearchRequest(BaseModel):
+    """
+    Modes:
+
+    summarize     → (DEFAULT) search + transcript + Ollama summary — primary use case
+    search_only   → just search and return raw video list
+    video_data    → return metadata for a single video_input
+    transcript    → return transcript text for a single video_input
+    full_bundle   → search + metadata + transcript in parallel (needs video_input + query)
+    """
+
+    query: str
+    mode: Literal["summarize", "search_only", "video_data", "transcript", "full_bundle"] = "summarize"
+    video_input: str | None = None  # URL or video-ID; required for video_data/transcript/full_bundle
+    max_videos: int = 5             # for summarize mode
+    summarize: bool = False         # if True, use Ollama; if False, return raw transcript
+    ollama_url: str = "http://localhost:11434/api/generate"  # override for remote Ollama
+    ollama_model: str = "qwen3.5:9b"
+    origin_research_id: str | None = None
+
+
+class WebSearchRequest(BaseModel):
+    query: str
+    max_no_url: int | None = None
+    max_concurrent_scrape_batches: int = 3
+    origin_research_id: str | None = None
+
+
+# ─────────────────────────── SSE EVENT STREAM ──────────────────────────────
+
 @app.get("/events/{client_id}")
 async def stream(request: Request, client_id: str):
+    """
+    Persistent SSE channel — subscribe once, receive all broadcasts.
+
+    Connect with:
+        GET /events/{client_id}
+
+    The server pushes JSON objects whenever any agent calls event_bus.broadcast().
+    """
     queue = event_bus.register(client_id)
 
     async def event_generator():
@@ -105,10 +182,18 @@ async def stream(request: Request, client_id: str):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+# ─────────────────────────── SCRAPE ────────────────────────────────────────
+
 @app.post("/scrape/urls")
 async def scrape_urls(req: ScrapeUrlsRequest):
     """
-    Test endpoint: send a list of URLs, receive scraped items streamed as SSE.
+    Scrape a list of URLs directly (no web search step).
+
+    SSE response (text/event-stream):
+    - type: "start"
+    - one item per scraped page
+    - type: "done"
+    - type: "error" on failure
 
     Body example:
       {
@@ -214,6 +299,66 @@ async def scrape_search(req: SearchScrapeRequest):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+# ─────────────────────────── QUERY VALIDATION ──────────────────────────────
+
+@app.post("/query/validate")
+async def validate_query(req: QueryValidateRequest):
+    """
+    Validate and pre-process a user query for safety and sanitization.
+
+    SSE response (text/event-stream):
+    - type: "start"
+    - type: "progress" — intermediate status updates
+    - type: "result"   — the validation result
+    - type: "done"     — stream finished
+    - type: "error"    — on failure
+
+    Body example:
+      {
+        "query": "What is the capital of France?",
+        "api_key": "your-gemini-api-key",
+        "origin_research_id": null
+      }
+    """
+
+    async def event_generator():
+        yield format_sse(
+            {
+                "success": True,
+                "type": "start",
+                "message": f"Starting query validation for: {req.query[:80]}",
+            }
+        )
+
+        try:
+            async for item in run_query_validation(
+                query=req.query,
+                api_key=req.api_key,
+                origin_research_id=req.origin_research_id,
+            ):
+                yield format_sse(item)
+
+            yield format_sse(
+                {
+                    "success": True,
+                    "type": "done",
+                    "message": "Query validation complete.",
+                }
+            )
+        except Exception as e:
+            yield format_sse(
+                {
+                    "success": False,
+                    "type": "error",
+                    "message": str(e),
+                }
+            )
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+# ─────────────────────────── SUMMARIZE ─────────────────────────────────────
+
 @app.post("/summarize")
 async def summarize_content(req: SummarizeRequest):
     """
@@ -272,48 +417,417 @@ async def summarize_content(req: SummarizeRequest):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-@app.post("/query/validate")
-async def validate_query(req: QueryValidateRequest):
+# ─────────────────────────── DOCUMENT PROCESSING ───────────────────────────
+
+@app.post("/process-document")
+async def process_document(
+    file: UploadFile = File(...),
+    filetype: Literal["pdf", "docx"] = Form(...),
+    summarize: bool = Form(False),
+    ollama_url: str = Form("http://localhost:11434/api/generate"),
+    origin_research_id: str | None = Form(None),
+):
     """
-    Validate and pre-process a user query for safety and sanitization.
+    Parse and optionally summarize an uploaded PDF or DOCX file.
+
+    Form fields:
+    - file          — the uploaded file (multipart/form-data)
+    - filetype      — "pdf" | "docx"
+    - summarize     — if true, run Ollama summarization after extraction (default: false)
+    - ollama_url    — Ollama API endpoint (default: http://localhost:11434/api/generate)
+                      Override this when Ollama runs on a remote server.
+    - origin_research_id — optional research session ID
 
     SSE response (text/event-stream):
     - type: "start"
-    - type: "progress" — intermediate status updates
-    - type: "result"   — the validation result
-    - type: "done"     — stream finished
-    - type: "error"    — on failure
-
-    Body example:
-      {
-        "query": "What is the capital of France?",
-        "api_key": "your-gemini-api-key",
-        "origin_research_id": null
-      }
+    - type: "progress"
+    - type: "result"   — { content: str } or { summary: str } when summarize=true
+    - type: "done"
+    - type: "error"
     """
+    import tempfile, os
 
     async def event_generator():
         yield format_sse(
             {
                 "success": True,
                 "type": "start",
-                "message": f"Starting query validation for: {req.query[:80]}",
+                "message": f"Processing {filetype.upper()} file: {file.filename}",
             }
         )
 
         try:
-            async for item in run_query_validation(
+            # ── 1. Save upload to a temp file so parsers can read it ──
+            suffix = f".{filetype}"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(await file.read())
+                tmp_path = tmp.name
+
+            yield format_sse(
+                {
+                    "success": True,
+                    "type": "progress",
+                    "message": f"File saved temporarily, extracting content...",
+                }
+            )
+
+            await event_bus.broadcast(
+                message={"msg": f"Parsing {filetype.upper()} file: {file.filename}"}
+            )
+
+            # ── 2. Extract or extract+summarize ──
+            try:
+                if summarize:
+                    # Uses Ollama under the hood — pass the user-supplied ollama_url
+                    if filetype == "pdf":
+                        result_text = await pdf_extract_summarized(tmp_path, ollama_url)
+                    else:
+                        result_text = await docx_extract_summarized(tmp_path, ollama_url)
+
+                    yield format_sse(
+                        {
+                            "success": True,
+                            "type": "result",
+                            "filename": file.filename,
+                            "filetype": filetype,
+                            "summarized": True,
+                            "ollama_url": ollama_url,
+                            "summary": result_text,
+                            "origin_research_id": origin_research_id,
+                        }
+                    )
+                else:
+                    # Plain extraction — no Ollama needed
+                    if filetype == "pdf":
+                        content = extract_pdf_to_md(tmp_path)
+                    else:
+                        content = extract_docx_to_md(tmp_path)
+
+                    yield format_sse(
+                        {
+                            "success": True,
+                            "type": "result",
+                            "filename": file.filename,
+                            "filetype": filetype,
+                            "summarized": False,
+                            "content": content,
+                            "origin_research_id": origin_research_id,
+                        }
+                    )
+            finally:
+                # ── 3. Always clean up temp file ──
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+            await event_bus.broadcast(
+                message={"msg": f"Finished processing {file.filename}"}
+            )
+
+            yield format_sse(
+                {
+                    "success": True,
+                    "type": "done",
+                    "message": f"Document processing complete for {file.filename}.",
+                }
+            )
+
+        except Exception as e:
+            yield format_sse(
+                {
+                    "success": False,
+                    "type": "error",
+                    "message": str(e),
+                }
+            )
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+# ─────────────────────────── IMAGE SEARCH ──────────────────────────────────
+
+@app.post("/imageSearch")
+async def image_search(req: ImageSearchRequest):
+    """
+    Search for images using SearXNG.
+
+    Returns a JSON response (not SSE) with a list of image results.
+
+    Body example:
+      {
+        "query": "cyberpunk city",
+        "num_results": 5,
+        "timeout": 10.0,
+        "origin_research_id": null
+      }
+
+    Response:
+      {
+        "success": true,
+        "query": "cyberpunk city",
+        "results": [
+          { "title": "...", "img_src": "...", "url": "...", "source": "..." },
+          ...
+        ]
+      }
+    """
+    try:
+        results = await search_images(
+            query=req.query,
+            num_results=req.num_results,
+            timeout=req.timeout,
+        )
+        return {
+            "success": True,
+            "query": req.query,
+            "num_results": len(results),
+            "results": results,
+            "origin_research_id": req.origin_research_id,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "query": req.query,
+            "error": str(e),
+            "origin_research_id": req.origin_research_id,
+        }
+
+
+# ─────────────────────────── NEWS SEARCH ───────────────────────────────────
+
+@app.post("/newsSearch")
+async def news_search(req: NewsSearchRequest):
+    """
+    Search recent news via SearXNG, then scrape the top URLs for full content.
+
+    Returns a JSON response with scraped news articles.
+
+    Body example:
+      {
+        "query": "AI trends 2026",
+        "num_results": 5,
+        "timeout": 10.0,
+        "origin_research_id": null
+      }
+
+    Response:
+      {
+        "success": true,
+        "query": "AI trends 2026",
+        "results": [
+          {
+            "title": "...",
+            "url": "...",
+            "description": "...",
+            "content": "...(scraped markdown)...",
+            "favicon": "..."
+          },
+          ...
+        ]
+      }
+    """
+    try:
+        results = await search_news(
+            query=req.query,
+            num_results=req.num_results,
+            timeout=req.timeout,
+        )
+        return {
+            "success": True,
+            "query": req.query,
+            "num_results": len(results),
+            "results": results,
+            "origin_research_id": req.origin_research_id,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "query": req.query,
+            "error": str(e),
+            "origin_research_id": req.origin_research_id,
+        }
+
+
+# ─────────────────────────── YOUTUBE SEARCH ────────────────────────────────
+
+@app.post("/youtubeSearch")
+async def youtube_search_endpoint(req: YouTubeSearchRequest):
+    """
+    YouTube search, metadata, transcript and Ollama summarization.
+
+    Modes (set via `mode` field):
+
+    | mode         | what it does                                               | needs video_input? |
+    |--------------|------------------------------------------------------------|--------------------|
+    | summarize    | search → transcript → Ollama summary (PRIMARY use case)    | No                 |
+    | search_only  | raw video list from search — no metadata or transcript     | No                 |
+    | video_data   | metadata for a single video                                | Yes                |
+    | transcript   | transcript text for a single video                         | Yes                |
+    | full_bundle  | search + metadata + transcript in parallel                 | Yes                |
+
+    Primary body example:
+      {
+        "query": "Best resorts in Bali 2026",
+        "mode": "summarize",
+        "max_videos": 5,
+        "ollama_url": "http://localhost:11434/api/generate",
+        "ollama_model": "qwen3.5:9b"
+      }
+
+    Response (summarize mode):
+      {
+        "success": true,
+        "query": "...",
+        "results": [
+          {
+            "id": "...",
+            "title": "...",
+            "desc": "...",
+            "thumbnail": "...",
+            "summary": "...",
+            "channelName": "...",
+            "channelImage": "..."
+          }
+        ]
+      }
+    """
+    try:
+        # ── PRIMARY MODE: full pipeline ──────────────────────────────────────
+        if req.mode == "summarize":
+            result = await youtube_search_and_summarize(
                 query=req.query,
-                api_key=req.api_key,
+                max_videos=req.max_videos,
+                ollama_url=req.ollama_url,
+                ollama_model=req.ollama_model,
+                summarize_video=req.summarize,
+            )
+            return {
+                "success": True,
+                "mode": req.mode,
+                "origin_research_id": req.origin_research_id,
+                **result,
+            }
+
+        # ── search_only ──────────────────────────────────────────────────────
+        if req.mode == "search_only":
+            videos = await youtube_search(req.query)
+            return {
+                "success": True,
+                "mode": req.mode,
+                "query": req.query,
+                "results": videos,
+                "origin_research_id": req.origin_research_id,
+            }
+
+        # ── modes that need video_input ──────────────────────────────────────
+        if not req.video_input:
+            return {
+                "success": False,
+                "mode": req.mode,
+                "error": f"`video_input` is required for mode '{req.mode}'",
+            }
+
+        if req.mode == "video_data":
+            data = await get_video_data(req.video_input)
+            return {
+                "success": True,
+                "mode": req.mode,
+                "video_input": req.video_input,
+                "data": data,
+                "origin_research_id": req.origin_research_id,
+            }
+
+        if req.mode == "transcript":
+            transcript = await get_video_transcript(req.video_input)
+            return {
+                "success": True,
+                "mode": req.mode,
+                "video_input": req.video_input,
+                "transcript": transcript,
+                "origin_research_id": req.origin_research_id,
+            }
+
+        if req.mode == "full_bundle":
+            from web.youtubeSearch import get_video_bundle
+            search_results, video_data, transcript = await get_video_bundle(
+                req.video_input, req.query
+            )
+            return {
+                "success": True,
+                "mode": req.mode,
+                "query": req.query,
+                "video_input": req.video_input,
+                "search_results": search_results,
+                "video_data": video_data,
+                "transcript": transcript,
+                "origin_research_id": req.origin_research_id,
+            }
+
+        return {"success": False, "error": f"Unknown mode: {req.mode}"}
+
+    except Exception as e:
+        return {
+            "success": False,
+            "mode": req.mode,
+            "error": str(e),
+            "origin_research_id": req.origin_research_id,
+        }
+
+
+# ─────────────────────────── WEB SEARCH ────────────────────────────────────
+
+@app.post("/webSearch")
+async def web_search(req: WebSearchRequest):
+    """
+    Search the web via SearXNG and scrape the result pages.
+    Streams each scraped page as an SSE event.
+
+    This is identical to /scrape/search but exposed under a cleaner URL
+    for consumer convenience.
+
+    SSE response (text/event-stream):
+    - type: "start"
+    - one item per scraped page
+    - type: "done"
+    - type: "error" on failure
+
+    Body example:
+      {
+        "query": "latest AI research papers 2026",
+        "max_no_url": 10,
+        "max_concurrent_scrape_batches": 3,
+        "origin_research_id": null
+      }
+    """
+
+    async def event_generator():
+        yielded_items = 0
+        yield format_sse(
+            {
+                "success": True,
+                "type": "start",
+                "message": f"Web search started for: {req.query}",
+            }
+        )
+
+        try:
+            async for item in search_and_scrape_pages(
+                [req.query],
+                max_urls=req.max_no_url,
+                max_concurrent_scrape_batches=req.max_concurrent_scrape_batches,
+                queries_are_urls=False,
                 origin_research_id=req.origin_research_id,
             ):
+                yielded_items += 1
                 yield format_sse(item)
 
             yield format_sse(
                 {
                     "success": True,
                     "type": "done",
-                    "message": "Query validation complete.",
+                    "message": f"Web search complete. Scraped {yielded_items} page(s).",
+                    "yielded_items": yielded_items,
                 }
             )
         except Exception as e:
@@ -327,6 +841,8 @@ async def validate_query(req: QueryValidateRequest):
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
+
+# ─────────────────────────── ENTRYPOINT ────────────────────────────────────
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8001)

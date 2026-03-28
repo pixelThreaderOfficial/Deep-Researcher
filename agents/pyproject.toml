@@ -1,9 +1,9 @@
 [project]
-name = "agents"
-version = "0.1.0"
-description = "Add your description here"
+name = "deep-researcher-v2-agents"
+version = "1.0.0"
+description = "Deep Researcher v2 agents."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "crawl4ai>=0.8.0",
     "fastapi>=0.135.1",
