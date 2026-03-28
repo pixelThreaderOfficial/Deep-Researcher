@@ -1,3 +1,3 @@
 EMBEDDING: embeddinggemma:latest -> reason is it is small and reliable context length.
-VISION: 
-TEXT: 
+VISION: "qwen3.5:9b"
+TEXT: "qwen3.5:9b"

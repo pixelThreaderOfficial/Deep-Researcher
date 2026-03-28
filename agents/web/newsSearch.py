@@ -11,6 +11,13 @@ from typing import Any, Dict, List
 
 import httpx
 
+from sse.event_bus import event_bus
+from utils.logger.AgentLogger import quickLog
+from utils.task_scheduler import scheduler
+from web.web_crawler import (
+    crawl_urls,
+)
+
 BASE_URL = "http://localhost:8080/search"
 
 
@@ -32,9 +39,20 @@ async def search_news(
     """
     params = {
         "q": query,
-        "categories": "news",
+        "categories": "general",
         "format": "json",
     }
+
+    await scheduler.schedule(
+        quickLog,
+        params={
+            "level": "info",
+            "message": f"Trying Collecting news for `{query}`",
+            "module": ["CRAWLER"],
+            "urgency": "none",
+        },
+    )
+    await event_bus.broadcast(message={"msg": "I'm exploring some latest news..."})
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.get(BASE_URL, params=params)
@@ -43,25 +61,43 @@ async def search_news(
 
     results = data.get("results", [])[:num_results]
 
-    return [
-        {
-            "title": r.get("title"),
-            "content": r.get("content"),
-            "url": r.get("url"),
-            "published_date": r.get("publishedDate"),
-            "source": r.get("source"),
-        }
-        for r in results
-    ]
+    # for now just use top 5 urls impliment the validation in future
+    #
+    urls_to_scrape = [i["url"] for i in results[0:5]]
+
+    # Scrape the contnet
+
+    results_crawl = await crawl_urls(urls_to_scrape)
+
+    response = []
+
+    for result in results_crawl:
+        res_item = {}
+        res_item["title"] = result["title"]
+        res_item["content"] = result["markdown"]
+        res_item["description"] = result["description"]
+        res_item["url"] = result["url"]
+        res_item["favicon"] = result["favicon"]
+        response.append(res_item)
+
+    return response
 
 
 # ------------------ TEST ------------------
 
 
-async def _test():
-    print("📰 Testing News Search...\n")
-    results = await search_news("AI breakthroughs", num_results=3)
+# async def _test():
+#     print("📰 Testing News Search...\n")
+#     results = await search_news(
+#         "Latest news on Bali Tourism. Is it safe to travel in this season?",
+#         num_results=5,
+#     )
 
-    for i, r in enumerate(results, 1):
-        print(f"{i}. {r['title']}")
-        print(f"   Link: {r['url']}\n")
+#     print(f"Found {len(results)} results.\n")
+#     print("-" * 60)
+
+#     for i, r in enumerate(results, 1):
+#         print(f"{i}. {r['title']}")
+#         print(f"   Link: {r['url']}\n")
+#         print(f"   Favicon: {r['favicon']}\n")
+#         print(f"   Desc: {r['description']}\n")
