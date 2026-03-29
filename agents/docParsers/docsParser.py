@@ -143,6 +143,20 @@ async def bulk_extract_text_summarized(docx_paths, summarizer_url):
     return results
 
 
+async def bulk_extract_docx_to_md(docx_paths):
+    results = {}
+    await event_bus.broadcast(message={"msg": "Extracting Markdown from DOCX Files!"})
+
+    for docx_path in docx_paths:
+        try:
+            results[docx_path] = extract_docx_to_md(docx_path)
+        except Exception as e:
+            logger.warning(f"Skipped {docx_path} due to error: {e}")
+            results[docx_path] = f"ERROR: Could not process this file. {str(e)}"
+
+    return results
+
+
 # ====================== TEST ======================
 # async def _test():
 #     docx_list = [

@@ -150,6 +150,20 @@ async def bulk_extract_text_summarized(pdf_paths, summarizer_url):
     return results
 
 
+async def bulk_extract_pdf_to_md(pdf_paths):
+    results = {}
+    await event_bus.broadcast(message={"msg": "Extracting Markdown from PDF Files!"})
+
+    for pdf_path in pdf_paths:
+        try:
+            results[pdf_path] = extract_pdf_to_md(pdf_path)
+        except Exception as e:
+            logger.warning(f"Skipped {pdf_path} due to error: {e}")
+            results[pdf_path] = f"ERROR: Could not process this file. {str(e)}"
+
+    return results
+
+
 # ====================== TEST ======================
 # async def _test():
 #     pdf_list = [

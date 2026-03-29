@@ -335,11 +335,11 @@ async def search_and_summarize(
 
         # ─ Extract metadata fields safely ─
         title = _safe_get(meta, "title") or _safe_get(raw, "title") or "Unknown Title"
-        
+
         # NOTE: py_youtube doesn't reliably return descriptions or channel images.
         # Fallback cleanly.
         desc = ""
-        
+
         thumbnail = _safe_get(meta, "thumbnails")
         if not thumbnail:
             thumb_list = _safe_get(raw, "thumb", default=[])
@@ -376,12 +376,14 @@ async def search_and_summarize(
     results: List[Dict[str, Any]] = []
     for i, r in enumerate(raw_results):
         if isinstance(r, Exception):
-            logger.warning(f"Unexpected error on video #{i}: {r}")
+            logger.warning("Unexpected error on video #%s: %s", i, r)
             continue
         if r is not None:
             results.append(r)
 
     logger.info(
-        f"search_and_summarize done: {len(results)}/{len(candidates)} videos succeeded."
+        "search_and_summarize done: %s/%s videos succeeded.",
+        len(results),
+        len(candidates),
     )
     return {"query": query, "results": results}

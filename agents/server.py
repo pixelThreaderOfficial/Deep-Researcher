@@ -11,10 +11,14 @@ from pydantic import BaseModel
 from docParsers.pdfParser import (
     extract_pdf_to_md,
     extract_text_summarized as pdf_extract_summarized,
+    bulk_extract_text_summarized as bulk_pdf_summarize,
+    bulk_extract_pdf_to_md,
 )
 from docParsers.docsParser import (
     extract_docx_to_md,
     extract_text_summarized as docx_extract_summarized,
+    bulk_extract_text_summarized as bulk_docx_summarize,
+    bulk_extract_docx_to_md,
 )
 from query.query import run_query_validation
 from sse.event_bus import event_bus
@@ -150,6 +154,13 @@ class WebSearchRequest(BaseModel):
     query: str
     max_no_url: int | None = None
     max_concurrent_scrape_batches: int = 3
+    origin_research_id: str | None = None
+
+
+class ProcessDocumentRequest(BaseModel):
+    urls: list[str]
+    summarize: bool = False
+    ollama_url: str = "http://localhost:11434/api/generate"
     origin_research_id: str | None = None
 
 
@@ -420,127 +431,103 @@ async def summarize_content(req: SummarizeRequest):
 # ─────────────────────────── DOCUMENT PROCESSING ───────────────────────────
 
 @app.post("/process-document")
-async def process_document(
-    file: UploadFile = File(...),
-    filetype: Literal["pdf", "docx"] = Form(...),
-    summarize: bool = Form(False),
-    ollama_url: str = Form("http://localhost:11434/api/generate"),
-    origin_research_id: str | None = Form(None),
-):
+async def process_document(req: ProcessDocumentRequest):
     """
-    Parse and optionally summarize an uploaded PDF or DOCX file.
-
-    Form fields:
-    - file          — the uploaded file (multipart/form-data)
-    - filetype      — "pdf" | "docx"
-    - summarize     — if true, run Ollama summarization after extraction (default: false)
-    - ollama_url    — Ollama API endpoint (default: http://localhost:11434/api/generate)
-                      Override this when Ollama runs on a remote server.
-    - origin_research_id — optional research session ID
+    Parse and optionally summarize multiple documents from a list of URLs.
 
     SSE response (text/event-stream):
     - type: "start"
     - type: "progress"
-    - type: "result"   — { content: str } or { summary: str } when summarize=true
+    - type: "result"   — { content: str } or { summary: str }
     - type: "done"
     - type: "error"
     """
-    import tempfile, os
 
     async def event_generator():
         yield format_sse(
             {
                 "success": True,
                 "type": "start",
-                "message": f"Processing {filetype.upper()} file: {file.filename}",
+                "message": f"Processing {len(req.urls)} document(s) from URLs",
             }
         )
 
-        try:
-            # ── 1. Save upload to a temp file so parsers can read it ──
-            suffix = f".{filetype}"
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                tmp.write(await file.read())
-                tmp_path = tmp.name
+        pdf_urls = [u for u in req.urls if u.lower().endswith(".pdf")]
+        docx_urls = [u for u in req.urls if u.lower().endswith((".docx", ".doc"))]
 
-            yield format_sse(
-                {
-                    "success": True,
-                    "type": "progress",
-                    "message": f"File saved temporarily, extracting content...",
-                }
-            )
+        # Process PDFs
+        if pdf_urls:
+            await event_bus.broadcast(message={"msg": f"Processing {len(pdf_urls)} PDF(s)..."})
+            if req.summarize:
+                results = await bulk_pdf_summarize(pdf_urls, req.ollama_url)
+                for url, result in results.items():
+                    filename = url.split("/")[-1].split("?")[0] or "document.pdf"
+                    yield format_sse({
+                        "success": "ERROR" not in result,
+                        "type": "result",
+                        "filename": filename,
+                        "filetype": "pdf",
+                        "summarized": True,
+                        "ollama_url": req.ollama_url,
+                        "summary": result,
+                        "url": url,
+                        "origin_research_id": req.origin_research_id,
+                    })
+            else:
+                results = await bulk_extract_pdf_to_md(pdf_urls)
+                for url, result in results.items():
+                    filename = url.split("/")[-1].split("?")[0] or "document.pdf"
+                    yield format_sse({
+                        "success": "ERROR" not in result,
+                        "type": "result",
+                        "filename": filename,
+                        "filetype": "pdf",
+                        "summarized": False,
+                        "content": result,
+                        "url": url,
+                        "origin_research_id": req.origin_research_id,
+                    })
 
-            await event_bus.broadcast(
-                message={"msg": f"Parsing {filetype.upper()} file: {file.filename}"}
-            )
+        # Process DOCXs
+        if docx_urls:
+            await event_bus.broadcast(message={"msg": f"Processing {len(docx_urls)} DOCX(s)..."})
+            if req.summarize:
+                results = await bulk_docx_summarize(docx_urls, req.ollama_url)
+                for url, result in results.items():
+                    filename = url.split("/")[-1].split("?")[0] or "document.docx"
+                    yield format_sse({
+                        "success": "ERROR" not in result,
+                        "type": "result",
+                        "filename": filename,
+                        "filetype": "docx",
+                        "summarized": True,
+                        "ollama_url": req.ollama_url,
+                        "summary": result,
+                        "url": url,
+                        "origin_research_id": req.origin_research_id,
+                    })
+            else:
+                results = await bulk_extract_docx_to_md(docx_urls)
+                for url, result in results.items():
+                    filename = url.split("/")[-1].split("?")[0] or "document.docx"
+                    yield format_sse({
+                        "success": "ERROR" not in result,
+                        "type": "result",
+                        "filename": filename,
+                        "filetype": "docx",
+                        "summarized": False,
+                        "content": result,
+                        "url": url,
+                        "origin_research_id": req.origin_research_id,
+                    })
 
-            # ── 2. Extract or extract+summarize ──
-            try:
-                if summarize:
-                    # Uses Ollama under the hood — pass the user-supplied ollama_url
-                    if filetype == "pdf":
-                        result_text = await pdf_extract_summarized(tmp_path, ollama_url)
-                    else:
-                        result_text = await docx_extract_summarized(tmp_path, ollama_url)
-
-                    yield format_sse(
-                        {
-                            "success": True,
-                            "type": "result",
-                            "filename": file.filename,
-                            "filetype": filetype,
-                            "summarized": True,
-                            "ollama_url": ollama_url,
-                            "summary": result_text,
-                            "origin_research_id": origin_research_id,
-                        }
-                    )
-                else:
-                    # Plain extraction — no Ollama needed
-                    if filetype == "pdf":
-                        content = extract_pdf_to_md(tmp_path)
-                    else:
-                        content = extract_docx_to_md(tmp_path)
-
-                    yield format_sse(
-                        {
-                            "success": True,
-                            "type": "result",
-                            "filename": file.filename,
-                            "filetype": filetype,
-                            "summarized": False,
-                            "content": content,
-                            "origin_research_id": origin_research_id,
-                        }
-                    )
-            finally:
-                # ── 3. Always clean up temp file ──
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-
-            await event_bus.broadcast(
-                message={"msg": f"Finished processing {file.filename}"}
-            )
-
-            yield format_sse(
-                {
-                    "success": True,
-                    "type": "done",
-                    "message": f"Document processing complete for {file.filename}.",
-                }
-            )
-
-        except Exception as e:
-            yield format_sse(
-                {
-                    "success": False,
-                    "type": "error",
-                    "message": str(e),
-                }
-            )
+        yield format_sse(
+            {
+                "success": True,
+                "type": "done",
+                "message": f"Document processing complete for {len(req.urls)} URLs.",
+            }
+        )
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
