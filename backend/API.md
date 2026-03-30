@@ -1,8 +1,8 @@
-pi without# Deep Researcher — Backend API Reference
+# Deep Researcher — Backend API Reference
 
-**Base URL:** `http://localhost:8000`  
-**Protocol:** HTTP/1.1 · REST  
-**Content-Type:** `application/json` (all endpoints except file upload, which uses `multipart/form-data`)  
+**Base URL:** `http://localhost:8000`
+**Protocol:** HTTP/1.1 · REST
+**Content-Type:** `application/json` (all endpoints except file upload, which uses `multipart/form-data`)
 **CORS allowed origins:** `http://localhost:3000`, `http://127.0.0.1:3000`
 
 ---

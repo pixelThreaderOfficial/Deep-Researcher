@@ -16,5 +16,7 @@ database/
 *.sqlite3
 *.db
 *.sqlite
+vectordb
+vectordb/*
 
 main/src/store/bucket/
