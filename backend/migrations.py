@@ -445,6 +445,7 @@ def create_research_tables() -> None:
                 "research_template_id": "TEXT",
                 "custom_instructions": "TEXT",
                 "prompt_order": "TEXT",
+                "status": "TEXT",
             },
             indexes=[["id", "workspace_id"]],
         )
@@ -463,17 +464,28 @@ def create_research_tables() -> None:
             },
             indexes=[["id", "workspace_id"]],
         )
-        logger.info("Created research_templates table...")
+        logger.info("Created research_templates table..")
+        logger.info("Creating research_confirmation_questions table...")
+        researches_db_manager.create_table(
+            "research_confirmation_questions",
+            {
+                "id": "TEXT PRIMARY KEY UNIQUE",
+                "research_id": "TEXT",
+                "questions": "TEXT",
+                "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+                "updated_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            },
+            indexes=[["id", "workspace_id"]],
+        )
+        logger.info("Created research_confirmation_questions table...")
         logger.info("Creating research_plans table...")
         researches_db_manager.create_table(
             "research_plans",
             {
                 "id": "TEXT PRIMARY KEY UNIQUE",
-                "title": "TEXT",
-                "desc": "TEXT",
                 "plan": "TEXT",
-                "workflow": "TEXT",
                 "workspace_id": "TEXT",
+                "research_id": "TEXT",
                 "research_template_id": "TEXT",
                 "prompt_order": "TEXT",
             },
