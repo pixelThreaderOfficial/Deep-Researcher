@@ -6,7 +6,7 @@ It is used to start and stop the background workers.
 from contextlib import asynccontextmanager
 import json
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -18,21 +18,24 @@ from main.apis.settings.settings_urls import router as settings_router
 from main.apis.workspace.workspace_urls import router as workspace_router
 from main.src.utils.core.task_schedular import scheduler
 from main.sse.event_bus import event_bus
+from main.sse.wss import wss
 
 # Initilize the queue workers: queue system for entire application so add temprory non important task to background processing queue.
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """ A context manager for the FastAPI application lifespan. 
+    """A context manager for the FastAPI application lifespan.
     It is used to start and stop the background workers.
     """
     # -------- SERVER START --------
     await scheduler.start()
+    await wss.start()
 
     yield
 
     # -------- SERVER SHUTDOWN --------
+    await wss.shutdown()
     await scheduler.shutdown()
 
 
@@ -42,6 +45,8 @@ app = FastAPI(title="Research API", version="1.0.0", lifespan=lifespan)
 allowed_origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:8001",
+    "http://127.0.0.1:001",
 ]
 
 # Register CORS middleware
@@ -75,6 +80,11 @@ async def stream(request: Request, client_id: str):
             event_bus.unregister(client_id)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.websocket("/ws/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, client_id: str):
+    await wss.handle_connection(websocket=websocket, client_id=client_id)
 
 
 app.include_router(research_router)

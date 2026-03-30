@@ -171,7 +171,7 @@ def _create_test_image() -> str:
 async def run_all_tests():
     # Dynamic import to ensure the circular fix is respected
     try:
-        import main.src.llms.ollama.DROllamaWrapper as W
+        import main.src.utils.llms.ollama.DROllamaWrapper as W
     except ImportError as e:
         log.error("%sImport Error during test initialization: %s%s", _RED, e, _RESET)
         return
