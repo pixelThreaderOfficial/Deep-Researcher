@@ -22,4 +22,5 @@ dependencies = [
     "redis>=7.2.1",
     "uvicorn>=0.41.0",
     "youtube-transcript-api>=1.2.4",
+    "aiohttp>=3.13.4",
 ]
