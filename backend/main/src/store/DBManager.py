@@ -3,6 +3,7 @@
 Exposes the `SQLiteManager` class with CRUD helpers, foreign key management,
 and automatic connection / PRAGMA handling for the Deep Researcher backend.
 """
+
 import logging
 import re
 import sqlite3
@@ -160,6 +161,144 @@ class SQLiteManager:
         # → dr_logger.log → insert → _get_connection → error → ∞
         self._logging_error = False
 
+    def initialize_fts(self, tables: Dict[str, List[str]]) -> Dict[str, Any]:
+        """
+        Initializes Full-Text Search (FTS5) infrastructure for specified tables.
+
+        This method creates FTS5 virtual tables (`{table}_fts`) for each provided
+        table, backfills existing data, and sets up SQLite triggers to ensure
+        automatic synchronization between the base tables and their FTS indexes.
+
+        The operation is idempotent:
+        - FTS tables are created only if they do not already exist.
+        - Existing data is backfilled only if the FTS table is empty.
+        - Triggers are created only if not already present.
+
+        Requirements:
+        - Each base table must have a primary key column named `id`.
+        - Columns specified must exist in the base table schema.
+        - SQLite must support FTS5 (enabled by default in modern builds).
+
+        Args:
+            tables (Dict[str, List[str]]):
+                Mapping of table names to lists of column names to be indexed.
+
+                Example:
+                    {
+                        "articles": ["title", "content"],
+                        "notes": ["text"]
+                    }
+
+        Returns:
+            Dict[str, Any]:
+                {
+                    "success": bool,
+                    "message": str,
+                    "data": None
+                }
+
+        Behavior:
+        - Creates virtual FTS tables using `fts5`.
+        - Links FTS tables to base tables using `content` and `content_rowid`.
+        - Automatically syncs data using triggers:
+            - AFTER INSERT → adds new row to FTS
+            - AFTER DELETE → removes row from FTS
+            - AFTER UPDATE → refreshes row in FTS
+
+        Usage:
+            Call once during application startup:
+
+                db.initialize_fts({
+                    "articles": ["title", "content"]
+                })
+
+        Notes:
+        - This method must be executed before using the `search` method.
+        - Re-running is safe and will not duplicate data or triggers.
+        - Schema changes (e.g., adding/removing columns) require reinitialization.
+
+        Raises:
+            ValueError: If table or column identifiers are invalid.
+            sqlite3.Error: If database operations fail.
+        """
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+
+                for table, columns in tables.items():
+                    valid_table = self._validate_identifier(table)
+                    valid_columns = [self._validate_identifier(col) for col in columns]
+
+                    fts_table = f"{valid_table}_fts"
+
+                    # ---- 1. Create FTS table if not exists ----
+                    cols_sql = ", ".join(valid_columns)
+                    cursor.execute(f"""
+                        CREATE VIRTUAL TABLE IF NOT EXISTS {fts_table}
+                        USING fts5({cols_sql}, content='{valid_table}', content_rowid='id')
+                    """)
+
+                    # ---- 2. Backfill (only if empty) ----
+                    cursor.execute(f"SELECT count(*) as c FROM {fts_table}")
+                    count = cursor.fetchone()["c"]
+
+                    if count == 0:
+                        cursor.execute(f"""
+                            INSERT INTO {fts_table}(rowid, {cols_sql})
+                            SELECT id, {cols_sql} FROM {valid_table}
+                        """)
+
+                    # ---- 3. Create triggers ----
+                    trigger_insert = f"""
+                        CREATE TRIGGER IF NOT EXISTS {valid_table}_ai
+                        AFTER INSERT ON {valid_table}
+                        BEGIN
+                            INSERT INTO {fts_table}(rowid, {cols_sql})
+                            VALUES (new.id, {", ".join([f"new.{c}" for c in valid_columns])});
+                        END;
+                    """
+
+                    trigger_delete = f"""
+                        CREATE TRIGGER IF NOT EXISTS {valid_table}_ad
+                        AFTER DELETE ON {valid_table}
+                        BEGIN
+                            INSERT INTO {fts_table}({fts_table}, rowid, {cols_sql})
+                            VALUES('delete', old.id, {", ".join([f"old.{c}" for c in valid_columns])});
+                        END;
+                    """
+
+                    trigger_update = f"""
+                        CREATE TRIGGER IF NOT EXISTS {valid_table}_au
+                        AFTER UPDATE ON {valid_table}
+                        BEGIN
+                            INSERT INTO {fts_table}({fts_table}, rowid, {cols_sql})
+                            VALUES('delete', old.id, {", ".join([f"old.{c}" for c in valid_columns])});
+
+                            INSERT INTO {fts_table}(rowid, {cols_sql})
+                            VALUES (new.id, {", ".join([f"new.{c}" for c in valid_columns])});
+                        END;
+                    """
+
+                    cursor.executescript(trigger_insert)
+                    cursor.executescript(trigger_delete)
+                    cursor.executescript(trigger_update)
+
+                conn.commit()
+
+            return {
+                "success": True,
+                "message": "FTS initialized for all tables",
+                "data": None,
+            }
+
+        except (ValueError, sqlite3.Error) as e:
+            _log_db_event(
+                f"Error initializing FTS: {e}",
+                "error",
+                urgency="critical",
+            )
+            return {"success": False, "message": str(e), "data": None}
+
     @staticmethod
     def _validate_identifier(identifier: str) -> str:
         """
@@ -282,8 +421,7 @@ class SQLiteManager:
                 self._logging_error = True
                 try:
                     _log_db_event(
-                        f"Error connecting to database "
-                        f"at {self.db_path}: {e}",
+                        f"Error connecting to database at {self.db_path}: {e}",
                         "error",
                         "critical",
                     )
@@ -291,8 +429,7 @@ class SQLiteManager:
                     self._logging_error = False
             else:
                 logger.error(
-                    "DB connection error (skipping DB log "
-                    "to avoid recursion): %s — %s",
+                    "DB connection error (skipping DB log to avoid recursion): %s — %s",
                     self.db_path,
                     e,
                 )
@@ -549,9 +686,7 @@ class SQLiteManager:
                             index_name = self._validate_identifier(index_name)
                         except ValueError:
                             # fallback: sanitized index name
-                            index_name = re.sub(
-                                r"[^a-zA-Z0-9_]+", "_", index_name
-                            )
+                            index_name = re.sub(r"[^a-zA-Z0-9_]+", "_", index_name)
 
                         index_sql = (
                             f"CREATE INDEX IF NOT EXISTS {index_name} "
@@ -1184,8 +1319,7 @@ class SQLiteManager:
                     return {
                         "success": False,
                         "message": (
-                            f"Table '{valid_table}' does not exist "
-                            f"or has no columns"
+                            f"Table '{valid_table}' does not exist or has no columns"
                         ),
                         "data": None,
                     }
@@ -1226,9 +1360,7 @@ class SQLiteManager:
                         continue
 
                     cursor.execute(f"PRAGMA index_info({idx_name})")
-                    idx_columns = [
-                        row["name"] for row in cursor.fetchall()
-                    ]
+                    idx_columns = [row["name"] for row in cursor.fetchall()]
 
                     existing_indexes.append(
                         {
@@ -1253,29 +1385,18 @@ class SQLiteManager:
                 # ── Step 4: Rebuild the table ──────────────────────────
                 temp_table = f"_rebuild_{valid_table}"
 
-                all_defs = (
-                    ", ".join(column_defs)
-                    + ", "
-                    + ", ".join(fk_clauses)
-                )
+                all_defs = ", ".join(column_defs) + ", " + ", ".join(fk_clauses)
                 cols_csv = ", ".join(column_names)
 
                 # Clean up leftover temp table from previous failed runs
-                cursor.execute(
-                    f"DROP TABLE IF EXISTS {temp_table}"
-                )
-                cursor.execute(
-                    f"CREATE TABLE {temp_table} ({all_defs})"
-                )
+                cursor.execute(f"DROP TABLE IF EXISTS {temp_table}")
+                cursor.execute(f"CREATE TABLE {temp_table} ({all_defs})")
                 cursor.execute(
                     f"INSERT INTO {temp_table} ({cols_csv}) "
                     f"SELECT {cols_csv} FROM {valid_table}"
                 )
                 cursor.execute(f"DROP TABLE {valid_table}")
-                cursor.execute(
-                    f"ALTER TABLE {temp_table} "
-                    f"RENAME TO {valid_table}"
-                )
+                cursor.execute(f"ALTER TABLE {temp_table} RENAME TO {valid_table}")
 
                 # ── Step 5: Recreate indexes ───────────────────────────
                 for idx in existing_indexes:
@@ -1291,9 +1412,7 @@ class SQLiteManager:
 
                 # ── Step 6: Re-enable FKs and verify integrity ─────────
                 conn.execute("PRAGMA foreign_keys = ON;")
-                cursor.execute(
-                    f"PRAGMA foreign_key_check({valid_table})"
-                )
+                cursor.execute(f"PRAGMA foreign_key_check({valid_table})")
                 violations = cursor.fetchall()
                 if violations:
                     logger.warning(
@@ -1308,16 +1427,13 @@ class SQLiteManager:
                     conn.close()
 
             logger.info(
-                "Foreign keys added to '%s' successfully "
-                "(%d constraint(s)).",
+                "Foreign keys added to '%s' successfully (%d constraint(s)).",
                 valid_table,
                 len(validated_fks),
             )
             return {
                 "success": True,
-                "message": (
-                    f"Foreign keys added to '{valid_table}' successfully"
-                ),
+                "message": (f"Foreign keys added to '{valid_table}' successfully"),
                 "data": {"foreign_keys_added": len(validated_fks)},
             }
 
@@ -1325,9 +1441,7 @@ class SQLiteManager:
             # Use logger directly — NOT _log_db_event — to avoid
             # the recursive loop: _log_db_event → dr_logger.log →
             # insert → _get_connection → error → _log_db_event → ∞
-            logger.error(
-                "Error adding foreign keys to %s: %s", table_name, e
-            )
+            logger.error("Error adding foreign keys to %s: %s", table_name, e)
             return {"success": False, "message": str(e), "data": None}
 
     def verify_foreign_keys(self, table_name: Optional[str] = None) -> Dict[str, Any]:
@@ -1412,6 +1526,154 @@ class SQLiteManager:
         except (ValueError, sqlite3.Error) as e:
             _log_db_event(
                 f"Error verifying foreign keys: {e}",
+                "error",
+                urgency="critical",
+            )
+            return {"success": False, "message": str(e), "data": None}
+
+    async def search(
+        self,
+        query: str,
+        tables: Dict[str, List[str]],
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        """
+        Performs full-text search across multiple tables using SQLite FTS5.
+
+        This method converts a natural language query into an optimized FTS5
+        MATCH expression, executes it against pre-initialized FTS tables, and
+        returns ranked results using the BM25 scoring algorithm.
+
+        Search behavior:
+        - Tokenizes and normalizes input query.
+        - Removes common stop words.
+        - Applies prefix matching (e.g., "learning" → "learn*").
+        - Combines terms using logical AND for broad recall.
+
+        Requirements:
+        - FTS tables must be initialized using `initialize_fts`.
+        - Each table must have a corresponding `{table}_fts` virtual table.
+
+        Args:
+            query (str):
+                Natural language search query.
+
+                Example:
+                    "machine learning model"
+
+            tables (Dict[str, List[str]]):
+                Mapping of table names to indexed columns.
+                (Columns are not used directly in query but define expected structure.)
+
+                Example:
+                    {
+                        "articles": ["title", "content"],
+                        "notes": ["text"]
+                    }
+
+            limit (int, optional):
+                Maximum number of results to return per table.
+                Defaults to 20.
+
+        Returns:
+            Dict[str, Any]:
+                {
+                    "success": bool,
+                    "message": str,
+                    "data": List[Dict[str, Any]]
+                }
+
+                Each result includes:
+                - Original row data
+                - `_source_table`: originating table name
+                - `rank`: BM25 relevance score (lower is better)
+
+        Usage:
+            results = db.search(
+                "machine learning",
+                tables={
+                    "articles": ["title", "content"]
+                }
+            )
+
+            for row in results["data"]:
+                print(row["_source_table"], row["rank"])
+
+        Notes:
+        - Results are ordered by relevance using `bm25`.
+        - Prefix matching improves recall but may increase result set size.
+        - Query translation is intentionally simple for performance and compatibility.
+
+        Limitations:
+        - No fuzzy matching (typo tolerance) by default.
+        - No semantic understanding (pure keyword-based search).
+        - Requires consistent schema between base and FTS tables.
+
+        Raises:
+            ValueError: If identifiers are invalid.
+            sqlite3.Error: If query execution fails.
+        """
+        try:
+            # ---- Step 1: Build FTS5 query ----
+            STOP_WORDS = {"what", "is", "the", "how", "a", "an", "in", "on", "of"}
+
+            words = re.findall(r"\b\w+\b", query.lower())
+            tokens = []
+
+            for word in words:
+                if word in STOP_WORDS:
+                    continue
+
+                if len(word) > 4:
+                    word = word[:5] + "*"
+
+                tokens.append(word)
+
+            if not tokens:
+                return {
+                    "success": False,
+                    "message": "Empty search query after processing",
+                    "data": None,
+                }
+
+            fts_query = " AND ".join(tokens)
+
+            results = []
+
+            # ---- Step 2: Query FTS tables ----
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+
+                for table, columns in tables.items():
+                    valid_table = self._validate_identifier(table)
+
+                    # Expecting FTS table: {table}_fts
+                    fts_table = f"{valid_table}_fts"
+
+                    sql = f"""
+                        SELECT *,
+                               bm25({fts_table}) as rank,
+                               '{valid_table}' as _source_table
+                        FROM {fts_table}
+                        WHERE {fts_table} MATCH ?
+                        ORDER BY rank
+                        LIMIT ?
+                    """
+
+                    cursor.execute(sql, (fts_query, limit))
+                    rows = cursor.fetchall()
+
+                    results.extend([dict(row) for row in rows])
+
+            return {
+                "success": True,
+                "message": "FTS search completed",
+                "data": results,
+            }
+
+        except (ValueError, sqlite3.Error) as e:
+            _log_db_event(
+                f"Error performing FTS search: {e}",
                 "error",
                 urgency="critical",
             )
@@ -1537,9 +1799,7 @@ def _initialize_store():
     database_dir.mkdir(parents=True, exist_ok=True)
     bucket_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info(
-        "Ensured directories exist: %s and %s", database_dir, bucket_dir
-    )
+    logger.info("Ensured directories exist: %s and %s", database_dir, bucket_dir)
 
     required_dbs = [
         "main.db.sqlite3",

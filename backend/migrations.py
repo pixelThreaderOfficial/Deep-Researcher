@@ -168,6 +168,23 @@ def create_workspace_tables() -> None:
         logger.info("Created workspace connected resources table...")
         logger.info("Workspace tables created successfully!")
 
+        logger.info("Initializing FTS for workspace tables...")
+        res = main_db_manager.initialize_fts(
+            {
+                "workspaces": ["name", "desc"],
+                "workspace_connected_resources": ["resource_ids"],
+            }
+        )
+        if res["success"]:
+            logger.info(
+                "FTS for workspace tables initialized successfully! with msg: %s",
+                res["message"],
+            )
+        else:
+            logger.error(
+                "Failed to initialize FTS for workspace tables: %s", res["message"]
+            )
+
     except (ValueError, sqlite3.Error, OSError) as e:
         _log_system_migrations_event(
             message=f"Failed to create workspace tables: {str(e)}",
@@ -207,7 +224,6 @@ def create_history_tables() -> None:
             "user_usage_history",
             {
                 "id": "TEXT PRIMARY KEY NOT NULL",
-                "user_id": "TEXT",
                 "workspace_id": "TEXT",
                 "activity": "TEXT",
                 "type": "TEXT",
@@ -314,6 +330,25 @@ def create_history_tables() -> None:
             indexes=[["id", "workspace_id", "bucket_id"], ["activity", "bucket_id"]],
         )
         logger.info("Created bucket_history table")
+
+        logger.info("Initializing FTS for history tables...")
+        res = history_db_manager.initialize_fts(
+            {
+                "user_usage_history": ["activity"],
+                "research_history": ["activity"],
+                "ai_summaries": ["prompt"],
+                "bucket_history": ["activity", "file_path"],
+            }
+        )
+        if res["success"]:
+            logger.info(
+                "FTS for history tables initialized successfully! with msg: %s",
+                res["message"],
+            )
+        else:
+            logger.error(
+                "Failed to initialize FTS for history tables: %s", res["message"]
+            )
     except (ValueError, sqlite3.Error, OSError) as e:
         _log_system_migrations_event(
             message=f"Failed to create history tables: {str(e)}",
@@ -397,6 +432,22 @@ def create_chat_tables() -> None:
             indexes=[["message_id"]],
         )
         logger.info("Created chat_attachments table!")
+
+        logger.info("Initializing FTS for chat tables...")
+        res = chats_db_manager.initialize_fts(
+            {
+                "chat_threads": ["thread_title"],
+                "chat_messages": ["content"],
+                "chat_attachments": ["attachment_path"],
+            }
+        )
+        if res["success"]:
+            logger.info(
+                "FTS for chat tables initialized successfully! with msg: %s",
+                res["message"],
+            )
+        else:
+            logger.error("Failed to initialize FTS for chat tables: %s", res["message"])
     except (ValueError, sqlite3.Error, OSError) as e:
         _log_system_migrations_event(
             message=f"Failed to create chat tables: {str(e)}",
@@ -551,6 +602,32 @@ def create_research_tables() -> None:
         )
         logger.info("Created research_sources table...")
 
+        logger.info("Initializing FTS for research tables...")
+        res = researches_db_manager.initialize_fts(
+            {
+                "researches": [
+                    "title",
+                    "desc",
+                    "prompt",
+                    "sources",
+                    "artifacts",
+                    "custom_instructions",
+                ],
+                "research_templates": ["title", "desc", "template"],
+                "research_confirmation_questions": ["questions"],
+                "research_sources": ["source_content", "source_url"],
+            }
+        )
+        if res["success"]:
+            logger.info(
+                "FTS for research tables initialized successfully! with msg: %s",
+                res["message"],
+            )
+        else:
+            logger.error(
+                "Failed to initialize FTS for research tables: %s", res["message"]
+            )
+
     except (ValueError, sqlite3.Error, OSError) as e:
         _log_system_migrations_event(
             f"Failed to create research tables: {str(e)}",
@@ -620,6 +697,23 @@ def create_bucket_tables() -> None:
             indexes=[["id", "bucket_id"], ["created_by"]],
         )
         logger.info("Created bucket items table")
+
+        logger.info("Initializing FTS for bucket tables...")
+        res = buckets_db_manager.initialize_fts(
+            {
+                "buckets": ["name", "description"],
+                "bucket_items": ["source", "file_name", "file_path", "summary"],
+            }
+        )
+        if res["success"]:
+            logger.info(
+                "FTS for bucket tables initialized successfully! with msg: %s",
+                res["message"],
+            )
+        else:
+            logger.error(
+                "Failed to initialize FTS for bucket tables: %s", res["message"]
+            )
 
     except (ValueError, sqlite3.Error, OSError) as e:
         _log_system_migrations_event(
@@ -719,6 +813,7 @@ def create_scrapes_database() -> None:
                 "id": "TEXT PRIMARY KEY UNIQUE",
                 "url": "TEXT",
                 "title": "TEXT",
+                "desc": "TEXT",
                 "favicon": "TEXT",
                 "content": "TEXT",
                 "metadata": "TEXT",
@@ -750,6 +845,18 @@ def create_scrapes_database() -> None:
             indexes=[["id"]],
         )
         logger.info("Scrapes_metadata table created successfully")
+
+        logger.info("Initializing FTS for scraper tables...")
+        res = scrapes_db_manager.initialize_fts({"scrapes": ["url", "content", "desc"]})
+        if res["success"]:
+            logger.info(
+                "FTS for scraper tables initialized successfully! with msg: %s",
+                res["message"],
+            )
+        else:
+            logger.error(
+                "Failed to initialize FTS for scraper tables: %s", res["message"]
+            )
 
     except (ValueError, sqlite3.Error, OSError) as e:
         _log_system_migrations_event(
