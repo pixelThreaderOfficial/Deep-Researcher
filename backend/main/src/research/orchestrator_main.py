@@ -234,6 +234,12 @@ class MasterOrchestrator:
         # Finalize — master-level DB writes & Redis cleanup
         # =====================================================================
         elapsed = int(time.time() - master_start)
+        raw_workspace_id = payload.get("workspaceId")
+        workspace_id = (
+            raw_workspace_id.strip()
+            if isinstance(raw_workspace_id, str) and raw_workspace_id.strip()
+            else None
+        )
 
         # researches table — mark fully done, write workspace linkage
         await scheduler.schedule(
@@ -242,7 +248,7 @@ class MasterOrchestrator:
                 "table_name": "researches",
                 "data": {
                     "status": "complete",
-                    "workspace_id": payload.get("workspaceId", ""),
+                    "workspace_id": workspace_id,
                     "artifacts": json.dumps(structured_output),
                     "sources": json.dumps(phase1_sources),
                     "prompt_order": json.dumps([p.description for p in plan.steps]),
@@ -252,6 +258,13 @@ class MasterOrchestrator:
         )
 
         # research_plans table — persist the final approved plan
+        raw_template_id = payload.get("research_template_id")
+        template_id = (
+            raw_template_id.strip()
+            if isinstance(raw_template_id, str) and raw_template_id.strip()
+            else None
+        )
+
         await scheduler.schedule(
             researches_db_manager.insert,
             params={
@@ -273,9 +286,9 @@ class MasterOrchestrator:
                             "expected_tools": getattr(plan, "expected_tools", []),
                         }
                     ),
-                    "workspace_id": payload.get("workspaceId", ""),
+                    "workspace_id": workspace_id,
                     "research_id": research_id,
-                    "research_template_id": payload.get("research_template_id", ""),
+                    "research_template_id": template_id,
                     "prompt_order": json.dumps([s.description for s in plan.steps]),
                 },
             },

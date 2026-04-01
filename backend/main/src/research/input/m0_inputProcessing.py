@@ -165,16 +165,20 @@ class InputProcessing:
         if extra_fields:
             base_state.update(extra_fields)
 
-        asyncio.run(
-            scheduler.schedule(
-                _sync_research_state_to_redis,
-                params={
-                    "redis_client": self.redis_client,
-                    "research_id": research_id,
-                    "state": base_state,
-                },
-            )
+        schedule_coro = scheduler.schedule(
+            _sync_research_state_to_redis,
+            params={
+                "redis_client": self.redis_client,
+                "research_id": research_id,
+                "state": base_state,
+            },
         )
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(schedule_coro)
+        except RuntimeError:
+            asyncio.run(schedule_coro)
 
     def _push_error_state_to_redis(
         self,
@@ -200,6 +204,20 @@ class InputProcessing:
                 "pipeline_stage": f"{pipeline_stage}:FAILED",
             },
         )
+
+    def _normalized_research_template_id(self) -> str | None:
+        """Return a valid FK value for research_template_id or None when absent."""
+        if not isinstance(self.research_template, str):
+            return None
+        template_id = self.research_template.strip()
+        return template_id or None
+
+    def _normalized_workspace_id(self) -> str | None:
+        """Return workspace id or None when blank to avoid invalid FK values."""
+        if not isinstance(self.workspaceId, str):
+            return None
+        workspace_id = self.workspaceId.strip()
+        return workspace_id or None
 
     # ─────────────────────────────────────────────────────────────────────────
     # Pipeline steps
@@ -240,15 +258,11 @@ class InputProcessing:
                 "desc": self.desc or "No description provided.",
                 "prompt": self.prompt,
                 "sources": str(self.sources),
-                "workspace_id": self.workspaceId,
+                "workspace_id": self._normalized_workspace_id(),
                 "artifacts": None,
                 "chat_access": self.chat_access,
                 "background_processing": self.background_processing,
-                "research_template_id": (
-                    self.research_template
-                    if isinstance(self.research_template, str)
-                    else ""
-                ),
+                "research_template_id": self._normalized_research_template_id(),
                 "custom_instructions": self.custom_prompt,
                 "prompt_order": None,
             }
