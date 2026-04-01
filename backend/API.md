@@ -96,15 +96,15 @@ List all workspaces.
 }
 ```
 
-| Response Field | Type | Notes |
-| -------------- | ---- | ----- |
-| `items` | `WorkspaceListItem[]` | paginated workspace rows |
-| `items[].resource_count` | int | exact non-deleted files linked to that workspace |
-| `page` | int | current page |
-| `size` | int | requested page size |
-| `total_items` | int | total matching workspaces before pagination |
-| `total_pages` | int | total available pages |
-| `offset` | int | zero-based starting index for this page |
+| Response Field           | Type                  | Notes                                            |
+| ------------------------ | --------------------- | ------------------------------------------------ |
+| `items`                  | `WorkspaceListItem[]` | paginated workspace rows                         |
+| `items[].resource_count` | int                   | exact non-deleted files linked to that workspace |
+| `page`                   | int                   | current page                                     |
+| `size`                   | int                   | requested page size                              |
+| `total_items`            | int                   | total matching workspaces before pagination      |
+| `total_pages`            | int                   | total available pages                            |
+| `offset`                 | int                   | zero-based starting index for this page          |
 
 > Note: `created_at` and `updated_at` are returned in IST 12-hour format (`YYYY-MM-DD HH:MM:SS AM/PM`).
 > Note: `resource_count` is workspace-specific even if multiple workspaces share the same bucket.
