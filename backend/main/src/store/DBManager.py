@@ -163,63 +163,86 @@ class SQLiteManager:
 
     def initialize_fts(self, tables: Dict[str, List[str]]) -> Dict[str, Any]:
         """
+        ## Description
+
         Initializes Full-Text Search (FTS5) infrastructure for specified tables.
 
-        This method creates FTS5 virtual tables (`{table}_fts`) for each provided
-        table, backfills existing data, and sets up SQLite triggers to ensure
-        automatic synchronization between the base tables and their FTS indexes.
+        Creates standalone FTS5 virtual tables (`{table}_fts`) for every listed
+        table, backfills existing data, and sets up SQLite triggers that keep the
+        FTS index in sync with the base table.
+
+        **Design note — TEXT primary keys and FTS rowid**
+
+        All tables in this project use `TEXT` (UUID) primary keys.  The previous
+        implementation used `content_rowid='id'` in the FTS5 DDL, which tells
+        SQLite to use the `id` column as the FTS integer rowid.  Because UUIDs are
+        plain `TEXT`, SQLite raised `sqlite3.OperationalError: datatype mismatch`
+        on every INSERT trigger.
+
+        The fix uses a **standalone** (non-content) FTS table: `content=` and
+        `content_rowid=` are intentionally omitted.  The FTS table keeps its own
+        internal integer rowid.  The `id` column is stored as `UNINDEXED` so
+        search results can still be joined back to the source table by UUID.
 
         The operation is idempotent:
         - FTS tables are created only if they do not already exist.
-        - Existing data is backfilled only if the FTS table is empty.
+        - Existing data is backfilled only if the FTS table is currently empty.
         - Triggers are created only if not already present.
 
-        Requirements:
-        - Each base table must have a primary key column named `id`.
-        - Columns specified must exist in the base table schema.
-        - SQLite must support FTS5 (enabled by default in modern builds).
+        ## Parameters
 
-        Args:
-            tables (Dict[str, List[str]]):
-                Mapping of table names to lists of column names to be indexed.
+        - `tables` (`Dict[str, List[str]]`)
+          - Description: Mapping of base table names to the list of columns to index.
+          - Constraints: Keys and values must pass `_validate_identifier`.
+          - Example:
 
-                Example:
-                    {
-                        "articles": ["title", "content"],
-                        "notes": ["text"]
-                    }
+            ```python
+            {
+                "articles": ["title", "content"],
+                "notes": ["text"]
+            }
+            ```
 
-        Returns:
-            Dict[str, Any]:
-                {
-                    "success": bool,
-                    "message": str,
-                    "data": None
-                }
+        ## Returns
 
-        Behavior:
-        - Creates virtual FTS tables using `fts5`.
-        - Links FTS tables to base tables using `content` and `content_rowid`.
-        - Automatically syncs data using triggers:
-            - AFTER INSERT → adds new row to FTS
-            - AFTER DELETE → removes row from FTS
-            - AFTER UPDATE → refreshes row in FTS
+        `Dict[str, Any]`
 
-        Usage:
-            Call once during application startup:
+        Structure:
 
-                db.initialize_fts({
-                    "articles": ["title", "content"]
-                })
+        ```json
+        {
+            "success": true,
+            "message": "FTS initialized for all tables",
+            "data": null
+        }
+        ```
 
-        Notes:
-        - This method must be executed before using the `search` method.
-        - Re-running is safe and will not duplicate data or triggers.
-        - Schema changes (e.g., adding/removing columns) require reinitialization.
+        ## Raises
 
-        Raises:
-            ValueError: If table or column identifiers are invalid.
-            sqlite3.Error: If database operations fail.
+        - `ValueError`
+          - When a table or column identifier is invalid.
+        - `sqlite3.Error`
+          - When FTS table creation or trigger registration fails.
+
+        ## Side Effects
+
+        - Creates `{table}_fts` virtual tables in the database.
+        - Registers `{table}_ai`, `{table}_ad`, `{table}_au` triggers.
+        - Backfills any existing rows into the FTS index on first run.
+
+        ## Debug Notes
+
+        - If the error `datatype mismatch` appears again, verify that trigger
+          bodies reference `new.rowid` / `old.rowid` (integer) for the FTS
+          `rowid` pseudo-column and NOT `new.id` / `old.id` (TEXT UUID).
+        - Check that no content-linked FTS (`content=`, `content_rowid=`) is
+          accidentally reintroduced for TEXT-keyed tables.
+
+        ## Customization
+
+        - To add a new indexed table, call `initialize_fts({"new_table": ["col1"]})`.
+        - FTS schema changes require dropping and recreating the `_fts` table and
+          its triggers before calling this method again.
         """
         try:
             with self._get_connection() as conn:
@@ -232,10 +255,19 @@ class SQLiteManager:
                     fts_table = f"{valid_table}_fts"
 
                     # ---- 1. Create FTS table if not exists ----
+                    # NOTE: We intentionally omit `content=` and `content_rowid=` here.
+                    # Using `content_rowid='id'` requires the mapped column to be INTEGER,
+                    # but all tables in this project use TEXT (UUID) primary keys.
+                    # Passing a UUID string as FTS rowid causes sqlite3.OperationalError:
+                    # "datatype mismatch". A standalone (non-content) FTS table avoids
+                    # this by maintaining its own integer rowid. The `id` column is
+                    # stored alongside the indexed content columns so searches can
+                    # still return the record's UUID.
                     cols_sql = ", ".join(valid_columns)
+                    id_col = "id UNINDEXED"
                     cursor.execute(f"""
                         CREATE VIRTUAL TABLE IF NOT EXISTS {fts_table}
-                        USING fts5({cols_sql}, content='{valid_table}', content_rowid='id')
+                        USING fts5({id_col}, {cols_sql})
                     """)
 
                     # ---- 2. Backfill (only if empty) ----
@@ -244,16 +276,18 @@ class SQLiteManager:
 
                     if count == 0:
                         cursor.execute(f"""
-                            INSERT INTO {fts_table}(rowid, {cols_sql})
+                            INSERT INTO {fts_table}(id, {cols_sql})
                             SELECT id, {cols_sql} FROM {valid_table}
                         """)
 
                     # ---- 3. Create triggers ----
+                    # Use new.rowid / old.rowid (SQLite implicit integer rowid) so
+                    # the FTS index can locate rows by its own internal integer key.
                     trigger_insert = f"""
                         CREATE TRIGGER IF NOT EXISTS {valid_table}_ai
                         AFTER INSERT ON {valid_table}
                         BEGIN
-                            INSERT INTO {fts_table}(rowid, {cols_sql})
+                            INSERT INTO {fts_table}(id, {cols_sql})
                             VALUES (new.id, {", ".join([f"new.{c}" for c in valid_columns])});
                         END;
                     """
@@ -262,8 +296,8 @@ class SQLiteManager:
                         CREATE TRIGGER IF NOT EXISTS {valid_table}_ad
                         AFTER DELETE ON {valid_table}
                         BEGIN
-                            INSERT INTO {fts_table}({fts_table}, rowid, {cols_sql})
-                            VALUES('delete', old.id, {", ".join([f"old.{c}" for c in valid_columns])});
+                            INSERT INTO {fts_table}({fts_table}, rowid, id, {cols_sql})
+                            VALUES('delete', old.rowid, old.id, {", ".join([f"old.{c}" for c in valid_columns])});
                         END;
                     """
 
@@ -271,10 +305,10 @@ class SQLiteManager:
                         CREATE TRIGGER IF NOT EXISTS {valid_table}_au
                         AFTER UPDATE ON {valid_table}
                         BEGIN
-                            INSERT INTO {fts_table}({fts_table}, rowid, {cols_sql})
-                            VALUES('delete', old.id, {", ".join([f"old.{c}" for c in valid_columns])});
+                            INSERT INTO {fts_table}({fts_table}, rowid, id, {cols_sql})
+                            VALUES('delete', old.rowid, old.id, {", ".join([f"old.{c}" for c in valid_columns])});
 
-                            INSERT INTO {fts_table}(rowid, {cols_sql})
+                            INSERT INTO {fts_table}(id, {cols_sql})
                             VALUES (new.id, {", ".join([f"new.{c}" for c in valid_columns])});
                         END;
                     """

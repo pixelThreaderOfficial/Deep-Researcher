@@ -84,9 +84,7 @@ OVERLAP_WORDS = 50
 OLLAMA_MODEL = "embeddinggemma:latest"
 OLLAMA_URL = "http://localhost:11434/api/embeddings"
 
-_CHROMA_PATH = (
-    Path(__file__).parent.parent.parent.parent / "data" / "vector" / "chroma"
-)
+_CHROMA_PATH = Path(__file__).parent / "vectordb" / "dr_vector"
 
 _log = logging.getLogger(__name__)
 
@@ -265,9 +263,7 @@ def _build_where(where: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not where:
         return None
 
-    clauses = [
-        {k: {"$eq": v}} for k, v in where.items()
-    ]
+    clauses = [{k: {"$eq": v}} for k, v in where.items()]
 
     if len(clauses) == 1:
         return clauses[0]
@@ -824,6 +820,7 @@ class VectorStore:
 
         `int` — Record count (0 if collection doesn't exist yet).
         """
+
         def _run():
             return self._get_collection(collection).count()
 
