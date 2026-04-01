@@ -116,7 +116,7 @@ def create_workspace_tables() -> None:
                 "icon": "TEXT",
                 "accent_clr": "TEXT",
                 "banner_img": "TEXT",
-                "connected_bucket_id": "TEXT",
+                "connected_bucket_id": "TEXT UNIQUE NOT NULL",
                 "ai_config": "TEXT",
                 "workspace_resources_id": "TEXT",
                 "workspace_research_agents": "BOOLEAN DEFAULT 1",
@@ -382,7 +382,8 @@ def create_chat_tables() -> None:
         chats_db_manager.create_table(
             "chat_threads",
             {
-                "thread_id": "TEXT PRIMARY KEY",
+                "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+                "thread_id": "TEXT UNIQUE NOT NULL",
                 "thread_title": "TEXT",
                 "workspace_id": "TEXT",
                 "user_id": "TEXT",
@@ -402,7 +403,8 @@ def create_chat_tables() -> None:
         chats_db_manager.create_table(
             "chat_messages",
             {
-                "message_id": "TEXT PRIMARY KEY",
+                "message_id": "TEXT PRIMARY KEY UNIQUE NOT NULL",
+                "id": "INTEGER AUTOINCREMENT",
                 "thread_id": "TEXT",
                 "message_seq": "INTEGER",
                 "parent_id": "TEXT",
@@ -414,22 +416,23 @@ def create_chat_tables() -> None:
                 "created_at": "DATETIME",
                 "updated_at": "DATETIME",
             },
-            indexes=[["thread_id", "message_seq"]],
+            indexes=[["message_id", "message_seq"]],
         )
         logger.info("Created chat_messages table!")
         logger.info("Creating chat_attachments table...")
         chats_db_manager.create_table(
             "chat_attachments",
             {
-                "attachment_id": "TEXT PRIMARY KEY",
-                "message_id": "TEXT",
+                "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+                "attachment_id": "TEXT UNIQUE NOT NULL",
+                "message_id": "TEXT UNIQUE NOT NULL",
                 "attachment_type": "TEXT",
                 "attachment_path": "TEXT",  # may be external file, links or internal research
                 "attachment_size": "INTEGER",
                 "created_at": "DATETIME",
                 "updated_at": "DATETIME",
             },
-            indexes=[["message_id"]],
+            indexes=[["attachment_id"]],
         )
         logger.info("Created chat_attachments table!")
 
@@ -1174,6 +1177,18 @@ def create_foreign_key_relationships() -> None:
         )
         if not result["success"]:
             logger.warning("FK chat_messages->chat_threads: %s", result["message"])
+
+        # Ensure message_id remains UNIQUE after rebuild (required for FK)
+        try:
+            with sqlite3.connect(str(chats_db_manager.db_path), timeout=5) as conn:
+                conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_messages_message_id_unique "
+                    "ON chat_messages (message_id)"
+                )
+        except sqlite3.Error as e:
+            logger.warning(
+                "Failed to ensure unique index on chat_messages.message_id: %s", e
+            )
 
         # chat_attachments.message_id → chat_messages.message_id
         logger.info("Adding FK: chat_attachments → chat_messages")
