@@ -138,3 +138,21 @@ def getSummarizationSchema() -> dict:
         dict: The summarize schema loaded from the corresponding JSON file.
     """
     return jsonschema["summarize"]
+
+def getThinkerSchema() -> dict:
+    """
+    ### Returns the JSON schema for thinking tasks.
+
+    The returned dictionary describes the structure of objects expected for thinking tasks, with keys and example values as follows:
+
+    Example output:
+    ```json
+        {
+            "thought": "A concise summary of the thinking process in under 100 words."
+        }
+    ```
+
+    Returns:
+        dict: The think schema loaded from the corresponding JSON file.
+    """
+    return jsonschema["thinker"]
