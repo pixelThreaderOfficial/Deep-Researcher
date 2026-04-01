@@ -439,9 +439,7 @@ class WorkspaceOrchestrator:
         paged_workspaces, total_items, total_pages, offset = self._paginate(
             workspaces, page, size
         )
-        resource_counts = self._build_workspace_resource_count_lookup(
-            paged_workspaces
-        )
+        resource_counts = self._build_workspace_resource_count_lookup(paged_workspaces)
         items = [
             WorkspaceListItem(
                 **workspace.model_dump(mode="python"),
