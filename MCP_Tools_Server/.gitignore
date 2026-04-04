@@ -1,3 +1,29 @@
-.vent
-.env
 env/
+# --- uv specific ---
+.venv/
+.python-version
+
+# --- Python standard ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Environments (if not using .venv)
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Optional: Ignore lockfile only for libraries (see below)
+uv.lock
+
+
+# Customs
+database/
+database/*
