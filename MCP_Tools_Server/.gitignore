@@ -27,3 +27,4 @@ uv.lock
 # Customs
 database/
 database/*
+temp/

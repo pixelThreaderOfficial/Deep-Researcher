@@ -8,14 +8,13 @@ import json
 from datetime import datetime
 from typing import Any, AsyncIterator, Dict, List, Optional
 
+from src.web.search_urls import SearXNGClient
+from src.web.web_crawler import (
+    get_crawler_engine,
+)
 from sse.event_bus import event_bus
 from utils.logger.AgentLogger import quickLog
 from utils.task_scheduler import scheduler
-
-from web.search_urls import SearXNGClient
-from web.web_crawler import (
-    get_crawler_engine,
-)
 
 # Search the URLs using SearXNG
 search_client = SearXNGClient()

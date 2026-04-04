@@ -8,4 +8,7 @@ dependencies = [
     "crawl4ai>=0.8.6",
     "httpx>=0.28.1",
     "mcp[cli]>=1.27.0",
+    "ollama>=0.6.1",
+    "youtube-transcript-api>=1.2.4",
+    "yt-dlp>=2026.3.17",
 ]
